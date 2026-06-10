@@ -1,0 +1,39 @@
+# Infra local de desenvolvimento: Postgres (com pgvector) + Redis.
+# Sobe com:  pnpm infra:up   (ou docker compose up -d)
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: stillo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stillo
+      POSTGRES_PASSWORD: stillo
+      POSTGRES_DB: stillo
+    ports:
+      - "5432:5432"
+    volumes:
+      - stillo_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stillo -d stillo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: stillo-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - stillo_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  stillo_pg:
+  stillo_redis:

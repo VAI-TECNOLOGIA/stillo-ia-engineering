@@ -1,0 +1,756 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// STILLO IA ENGINEERING — Schema Prisma (fonte da verdade do modelo de dados)
+// Multi-tenant por coluna (ADR-0002). pgvector para RAG (ADR-0003).
+// Doc explicativo: docs/02-MODELO-DE-DADOS.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  // "native" p/ dev local; "rhel-openssl-3.0.x" = runtime Node do Vercel (Amazon Linux 2 / OpenSSL 3)
+  binaryTargets   = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector] // pgvector — habilitado na migration inicial
+}
+
+// ───────────────────────────── ENUMS ───────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  DIRETORIA
+  GERENTE
+  ORCAMENTISTA
+  COMERCIAL
+  CONSULTA
+}
+
+enum ObraStatus {
+  RASCUNHO
+  EM_LEITURA
+  EM_DIMENSIONAMENTO
+  EM_ORCAMENTO
+  CONCLUIDA
+  ARQUIVADA
+}
+
+enum ArquivoTipo {
+  PDF
+  IMAGEM
+  DWG
+  DOCUMENTO
+}
+
+enum StatusProcessamento {
+  PENDENTE
+  PROCESSANDO
+  CONCLUIDO
+  FALHA
+  REVISAO_MANUAL
+}
+
+enum SistemaTipo {
+  FILTRAGEM
+  LED
+  AQUECIMENTO
+  HIDROMASSAGEM
+  CASCATA
+  BORDA_INFINITA
+  PRAINHA
+  SPA
+  SAUNA
+  TRATAMENTO
+}
+
+enum PiscinaTipo {
+  INTERNA
+  EXTERNA
+}
+
+enum RegraCategoria {
+  ILUMINACAO
+  HIDRAULICA
+  FILTRAGEM
+  AQUECIMENTO
+  TRATAMENTO
+  MAO_DE_OBRA
+  ESTRUTURA
+}
+
+enum ProdutoStatus {
+  ATIVO
+  INATIVO
+  DESCONTINUADO
+}
+
+enum ProdutoRelacaoTipo {
+  COMPATIVEL
+  SUBSTITUTO
+}
+
+enum StatusIndexacao {
+  PENDENTE
+  INDEXANDO
+  INDEXADO
+  FALHA
+}
+
+enum DimensionamentoStatus {
+  PENDENTE
+  PROCESSANDO
+  CONCLUIDO
+  FALHA
+}
+
+enum ItemOrigem {
+  REGRA
+  IA_RAG
+  MANUAL
+}
+
+enum OrcamentoStatus {
+  RASCUNHO
+  EM_REVISAO
+  APROVADO
+  ENVIADO
+  RECUSADO
+}
+
+enum ChatPapel {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+/// Disciplina/tipo de prancha de um documento de projeto (motor de leitura v2).
+enum DocumentType {
+  ARQUITETONICO
+  HIDRAULICO
+  ELETRICO
+  CORTES
+  DETALHES_EXECUTIVOS
+  CASA_DE_MAQUINAS
+  EQUIPAMENTOS
+  MEMORIAL_DESCRITIVO
+  ESTRUTURAL
+  IMPLANTACAO
+  PAISAGISMO
+  LAZER
+  DESCONHECIDO
+}
+
+/// Status de uma análise individual de documento (1 PDF = 1 DocumentAnalysis).
+enum DocAnaliseStatus {
+  PENDENTE
+  CLASSIFICANDO
+  CLASSIFICADO
+  EXTRAINDO
+  EXTRAIDO
+  FALHA
+}
+
+/// Status do projeto consolidado (motor de leitura v2).
+enum ProjectAnalysisStatus {
+  EM_ANALISE
+  CONSOLIDADO
+  COM_PENDENCIAS
+  AGUARDANDO_CONFIRMACAO
+  CONFIRMADO
+  BLOQUEADO
+  FALHA
+}
+
+// ─────────────────────────── NÚCLEO / TENANT ───────────────────────────────
+
+model Tenant {
+  id            String   @id @default(cuid())
+  nome          String
+  slug          String   @unique
+  plano         String   @default("standard")
+  configuracoes Json     @default("{}")
+  ativo         Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  users           User[]
+  clientes        Cliente[]
+  obras           Obra[]
+  arquivos        Arquivo[]
+  piscinas        Piscina[]
+  catalogos       Catalogo[]
+  produtos        Produto[]
+  regras          Regra[]
+  dimensionamentos Dimensionamento[]
+  orcamentos      Orcamento[]
+  conversas       ChatConversa[]
+  baseConhecimento BaseConhecimento[]
+  auditLogs       AuditLog[]
+  leituras        Leitura[]
+  projectAnalyses  ProjectAnalysis[]
+  documentAnalyses DocumentAnalysis[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String
+  nome         String
+  email        String
+  passwordHash String
+  role         UserRole @default(CONSULTA)
+  ativo        Boolean  @default(true)
+  ultimoLogin  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refreshTokens    RefreshToken[]
+  obrasCriadas     Obra[]            @relation("ObraCriador")
+  orcamentos       Orcamento[]       @relation("OrcamentoCriador")
+  dimensionamentos Dimensionamento[] @relation("DimGerador")
+  correcoes        Correcao[]
+  conversas        ChatConversa[]
+  auditLogs        AuditLog[]
+  analisesConfirmadas ProjectAnalysis[] @relation("ProjectAnalysisConfirmador")
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  familia   String // detecção de reuso: rotação revoga a família
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ───────────────────────────── COMERCIAL ───────────────────────────────────
+
+model Cliente {
+  id          String    @id @default(cuid())
+  tenantId    String
+  nome        String
+  documento   String? // CPF/CNPJ
+  contatos    Json      @default("[]") // [{tipo, valor}]
+  endereco    Json? // {logradouro, cidade, uf, cep...}
+  observacoes String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  obras  Obra[]
+
+  @@index([tenantId])
+  @@index([tenantId, nome])
+}
+
+model Obra {
+  id          String     @id @default(cuid())
+  tenantId    String
+  clienteId   String
+  nome        String
+  endereco    String?
+  cidade      String?
+  uf          String?
+  regiao      String? // p/ regras climáticas (aquecimento por região)
+  status      ObraStatus @default(RASCUNHO)
+  observacoes String?
+  createdById String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  deletedAt   DateTime?
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cliente          Cliente           @relation(fields: [clienteId], references: [id])
+  criador          User?             @relation("ObraCriador", fields: [createdById], references: [id])
+  arquivos         Arquivo[]
+  piscinas         Piscina[]
+  dimensionamentos Dimensionamento[]
+  orcamentos       Orcamento[]
+  leituras         Leitura[]
+  projectAnalyses  ProjectAnalysis[]
+
+  @@index([tenantId])
+  @@index([tenantId, status, createdAt])
+  @@index([clienteId])
+}
+
+model Arquivo {
+  id                  String              @id @default(cuid())
+  tenantId            String
+  obraId              String
+  tipo                ArquivoTipo
+  nomeOriginal        String
+  storageKey          String
+  mimeType            String?
+  tamanhoBytes        Int?
+  statusProcessamento StatusProcessamento @default(PENDENTE)
+  textoExtraido       String? // resultado OCR/parse (texto bruto normalizado)
+  ocrConfianca        Float? // 0..1
+  erro                String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  obra     Obra      @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  leituras Leitura[]
+  documentAnalyses DocumentAnalysis[]
+
+  @@index([tenantId])
+  @@index([obraId])
+  @@index([statusProcessamento])
+}
+
+/// Leitura Inteligente: resultado do pipeline OCR + extração por IA de uma obra.
+model Leitura {
+  id           String              @id @default(cuid())
+  tenantId     String
+  obraId       String
+  arquivoId    String?
+  status       StatusProcessamento @default(PENDENTE)
+  textoOcr     String?
+  ocrConfianca Float?
+  /// ProjetoExtraido: { piscinas: [...], avisos: [...] } com confiança por campo
+  resultado    Json                @default("{}")
+  modeloIa     String?
+  erro         String?
+  geradoById   String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  obra    Obra     @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  arquivo Arquivo? @relation(fields: [arquivoId], references: [id])
+
+  @@index([tenantId])
+  @@index([obraId])
+}
+
+/// Motor de leitura v2 — análise consolidada de TODOS os documentos de uma obra.
+/// 1 ProjectAnalysis = N DocumentAnalysis (1 por PDF) + consolidação + validação.
+model ProjectAnalysis {
+  id       String                @id @default(cuid())
+  tenantId String
+  obraId   String
+  status   ProjectAnalysisStatus @default(EM_ANALISE)
+
+  /// Consolidação: corposDagua/equipamentos/sistemas — todo campo com evidência { valor, fontes[], status }.
+  consolidacao Json @default("{}")
+  /// Resultado da validação técnica: { erros[], pendencias[], aprovado }.
+  validacao    Json @default("{}")
+  /// Resumo técnico legível gerado para confirmação humana.
+  resumo       Json @default("{}")
+
+  confirmadoById String?
+  confirmadoEm   DateTime?
+  geradoById     String?
+  erro           String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  obra        Obra               @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  confirmador User?              @relation("ProjectAnalysisConfirmador", fields: [confirmadoById], references: [id])
+  analises    DocumentAnalysis[]
+
+  @@index([tenantId])
+  @@index([obraId, createdAt])
+}
+
+/// Análise individual de UM documento: classificação de disciplina + extração especializada.
+/// Nunca é sobrescrita por outro documento — consolidação acontece em ProjectAnalysis.
+model DocumentAnalysis {
+  id                String           @id @default(cuid())
+  tenantId          String
+  projectAnalysisId String
+  arquivoId         String
+  documentType      DocumentType     @default(DESCONHECIDO)
+  /// Confiança da classificação 0..1 e sinais usados (nomeArquivo/carimbo/conteudo).
+  classificacao     Json             @default("{}")
+  status            DocAnaliseStatus @default(PENDENTE)
+  /// Extração especializada da disciplina — todo dado com { valor, fonte, pagina, status }.
+  extracao          Json             @default("{}")
+  modeloIa          String?
+  erro              String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  projectAnalysis ProjectAnalysis @relation(fields: [projectAnalysisId], references: [id], onDelete: Cascade)
+  arquivo         Arquivo         @relation(fields: [arquivoId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([projectAnalysisId])
+  @@index([arquivoId])
+}
+
+// ───────────────────────────── TÉCNICO ─────────────────────────────────────
+
+model Piscina {
+  id              String       @id @default(cuid())
+  tenantId        String
+  obraId          String
+  nome            String
+  tipo            PiscinaTipo  @default(EXTERNA)
+  comprimentoM    Float?
+  larguraM        Float?
+  profundidadeM   Float?
+  volumeM3        Float? // derivado, mas persistido p/ consulta
+  casaDeMaquinas  Boolean      @default(false)
+  origemLeitura   Boolean      @default(false) // veio da IA?
+  confiancaLeitura Float? // 0..1 quando origem IA
+  observacoes     String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  obra     Obra              @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  sistemas PiscinaSistema[]
+  itens    OrcamentoItem[]
+
+  @@index([tenantId])
+  @@index([obraId])
+}
+
+model PiscinaSistema {
+  id         String      @id @default(cuid())
+  piscinaId  String
+  tipo       SistemaTipo
+  ativo      Boolean     @default(true)
+  parametros Json        @default("{}") // ex.: {potencia, vazao, comprimentoCascata}
+  createdAt  DateTime    @default(now())
+
+  piscina Piscina @relation(fields: [piscinaId], references: [id], onDelete: Cascade)
+
+  @@unique([piscinaId, tipo])
+  @@index([piscinaId])
+}
+
+// ──────────────────────── CATÁLOGOS / PRODUTOS / RAG ────────────────────────
+
+model Catalogo {
+  id              String          @id @default(cuid())
+  tenantId        String
+  nome            String
+  fonte           String // PDF | EXCEL | CSV | DOC
+  storageKey      String?
+  statusIndexacao StatusIndexacao @default(PENDENTE)
+  totalChunks     Int             @default(0)
+  erro            String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  chunks CatalogoChunk[]
+
+  @@index([tenantId])
+}
+
+model CatalogoChunk {
+  id         String                       @id @default(cuid())
+  tenantId   String
+  catalogoId String
+  ordem      Int
+  texto      String
+  metadata   Json                         @default("{}")
+  // Embedding (text-embedding-3-large reduzido p/ 1536 dims via param `dimensions`).
+  // Índice HNSW criado por migration SQL manual (Prisma não gerencia índice de Unsupported).
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime                     @default(now())
+
+  catalogo Catalogo @relation(fields: [catalogoId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([catalogoId])
+}
+
+model Produto {
+  id             String        @id @default(cuid())
+  tenantId       String
+  sku            String
+  nome           String
+  categoria      String // alinhado a SistemaTipo/RegraCategoria quando aplicável
+  fabricante     String?
+  modelo         String?
+  unidade        String        @default("un")
+  preco          Decimal       @default(0) @db.Decimal(12, 2)
+  status         ProdutoStatus @default(ATIVO)
+  especificacoes Json          @default("{}") // {potenciaCv, vazaoM3h, volumeMaxM3, ...}
+  observacoes    String?
+  // Embedding do texto comercial+técnico do produto (busca semântica).
+  embedding      Unsupported("vector(1536)")?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  deletedAt      DateTime?
+
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  relacoesOrigem  ProdutoRelacao[]  @relation("ProdutoOrigem")
+  relacoesDestino ProdutoRelacao[]  @relation("ProdutoRelacionado")
+  orcamentoItens  OrcamentoItem[]
+  dimItens        DimensionamentoItem[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId])
+  @@index([tenantId, categoria, status])
+}
+
+model ProdutoRelacao {
+  id            String             @id @default(cuid())
+  tenantId      String
+  tipo          ProdutoRelacaoTipo
+  produtoId     String
+  relacionadoId String
+  nota          String?
+
+  produto     Produto @relation("ProdutoOrigem", fields: [produtoId], references: [id], onDelete: Cascade)
+  relacionado Produto @relation("ProdutoRelacionado", fields: [relacionadoId], references: [id], onDelete: Cascade)
+
+  @@unique([produtoId, relacionadoId, tipo])
+  @@index([tenantId])
+}
+
+// ───────────────────────────── MOTOR DE REGRAS ─────────────────────────────
+
+model Regra {
+  id         String         @id @default(cuid())
+  tenantId   String
+  nome       String
+  categoria  RegraCategoria
+  descricao  String?
+  prioridade Int            @default(100)
+  ativo      Boolean        @default(true)
+  quando     Json // condição (ver docs/04-MOTOR-DE-REGRAS.md)
+  entao      Json // ações
+  versao     Int            @default(1)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  tenant   Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  versoes  RegraVersao[]
+  dimItens DimensionamentoItem[]
+  orcItens OrcamentoItem[]
+
+  @@index([tenantId])
+  @@index([tenantId, categoria, ativo])
+}
+
+model RegraVersao {
+  id        String   @id @default(cuid())
+  regraId   String
+  versao    Int
+  snapshot  Json
+  autorId   String?
+  createdAt DateTime @default(now())
+
+  regra Regra @relation(fields: [regraId], references: [id], onDelete: Cascade)
+
+  @@unique([regraId, versao])
+  @@index([regraId])
+}
+
+// ──────────────────────── DIMENSIONAMENTO / ORÇAMENTO ──────────────────────
+
+model Dimensionamento {
+  id          String                @id @default(cuid())
+  tenantId    String
+  obraId      String
+  status      DimensionamentoStatus @default(PENDENTE)
+  geradoById  String?
+  resumo      Json                  @default("{}") // totais por categoria, avisos
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  tenant  Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  obra    Obra                  @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  gerador User?                 @relation("DimGerador", fields: [geradoById], references: [id])
+  itens   DimensionamentoItem[]
+
+  @@index([tenantId])
+  @@index([obraId])
+}
+
+model DimensionamentoItem {
+  id                String  @id @default(cuid())
+  dimensionamentoId String
+  piscinaId         String?
+  categoria         String
+  descricao         String
+  quantidade        Float
+  unidade           String  @default("un")
+  regraId           String? // regra que originou (rastreabilidade)
+  produtoSugeridoId String? // sugestão via RAG
+  explicacao        Json    @default("{}") // fatos usados no cálculo
+  createdAt         DateTime @default(now())
+
+  dimensionamento Dimensionamento @relation(fields: [dimensionamentoId], references: [id], onDelete: Cascade)
+  regra           Regra?          @relation(fields: [regraId], references: [id])
+  produtoSugerido Produto?        @relation(fields: [produtoSugeridoId], references: [id])
+
+  @@index([dimensionamentoId])
+}
+
+model Orcamento {
+  id          String          @id @default(cuid())
+  tenantId    String
+  obraId      String
+  numero      Int // sequencial por tenant
+  status      OrcamentoStatus @default(RASCUNHO)
+  valorTotal  Decimal         @default(0) @db.Decimal(14, 2)
+  versaoAtual Int             @default(1)
+  createdById String?
+  aprovadoById String?
+  aprovadoEm  DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  deletedAt   DateTime?
+
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  obra    Obra              @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  criador User?             @relation("OrcamentoCriador", fields: [createdById], references: [id])
+  itens   OrcamentoItem[]
+  versoes OrcamentoVersao[]
+
+  @@unique([tenantId, numero])
+  @@index([tenantId])
+  @@index([tenantId, status, createdAt])
+  @@index([obraId])
+}
+
+model OrcamentoVersao {
+  id          String   @id @default(cuid())
+  orcamentoId String
+  versao      Int
+  snapshot    Json // estado completo dos itens + total
+  autorId     String?
+  createdAt   DateTime @default(now())
+
+  orcamento Orcamento @relation(fields: [orcamentoId], references: [id], onDelete: Cascade)
+
+  @@unique([orcamentoId, versao])
+  @@index([orcamentoId])
+}
+
+model OrcamentoItem {
+  id          String     @id @default(cuid())
+  orcamentoId String
+  piscinaId   String?
+  sistema     SistemaTipo?
+  produtoId   String?
+  descricao   String
+  quantidade  Float      @default(1)
+  precoUnit   Decimal    @default(0) @db.Decimal(12, 2)
+  subtotal    Decimal    @default(0) @db.Decimal(14, 2)
+  origem      ItemOrigem @default(MANUAL)
+  regraId     String? // se origem REGRA
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  orcamento Orcamento   @relation(fields: [orcamentoId], references: [id], onDelete: Cascade)
+  piscina   Piscina?    @relation(fields: [piscinaId], references: [id])
+  produto   Produto?    @relation(fields: [produtoId], references: [id])
+  regra     Regra?      @relation(fields: [regraId], references: [id])
+  correcoes Correcao[]
+
+  @@index([orcamentoId])
+  @@index([produtoId])
+}
+
+// ───────────────────────────── APRENDIZADO ─────────────────────────────────
+
+model Correcao {
+  id              String   @id @default(cuid())
+  tenantId        String
+  orcamentoItemId String?
+  entidade        String // "OrcamentoItem" | "Leitura" | ...
+  de              Json
+  para            Json
+  justificativa   String?
+  autorId         String?
+  createdAt       DateTime @default(now())
+
+  orcamentoItem OrcamentoItem? @relation(fields: [orcamentoItemId], references: [id], onDelete: SetNull)
+  autor         User?          @relation(fields: [autorId], references: [id])
+
+  @@index([tenantId])
+  @@index([orcamentoItemId])
+}
+
+model BaseConhecimento {
+  id        String                       @id @default(cuid())
+  tenantId  String
+  tipo      String // "correcao" | "nota_tecnica" | "faq"
+  conteudo  String
+  tags      String[]
+  embedding Unsupported("vector(1536)")?
+  createdAt DateTime                     @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+// ──────────────────────────── CHAT IA (RAG) ────────────────────────────────
+
+model ChatConversa {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  titulo    String?
+  contexto  Json     @default("{}") // {obraId?, orcamentoId?}
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mensagens ChatMensagem[]
+
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model ChatMensagem {
+  id         String    @id @default(cuid())
+  conversaId String
+  papel      ChatPapel
+  conteudo   String
+  fontes     Json      @default("[]") // [{produtoId, sku}] — rastreabilidade RAG
+  tokens     Int?
+  createdAt  DateTime  @default(now())
+
+  conversa ChatConversa @relation(fields: [conversaId], references: [id], onDelete: Cascade)
+
+  @@index([conversaId])
+}
+
+// ───────────────────────────── AUDITORIA ───────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  autorId    String?
+  acao       String // CREATE | UPDATE | DELETE | APPROVE | EXPORT ...
+  entidade   String
+  entidadeId String?
+  antes      Json?
+  depois     Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  autor  User?  @relation(fields: [autorId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, entidade, entidadeId])
+}

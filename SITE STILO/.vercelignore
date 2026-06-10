@@ -1,0 +1,13 @@
+# Arquivos-fonte soltos (downloads originais do Instagram) — NÃO usados pelo site.
+# O site usa apenas: index.html + assets/ (css, js, img, video/hero-spa.mp4)
+/*.jpg
+/*.jpeg
+/*.mp4
+/*.webp
+/*.png
+
+# vídeo não referenciado pelo site
+assets/video/water-flow.mp4
+
+# sistema
+.DS_Store

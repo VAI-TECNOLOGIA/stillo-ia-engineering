@@ -1,0 +1,27 @@
+{
+  "name": "stillo-ia-engineering",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plataforma de engenharia comercial: transforma projetos de piscina em orçamentos técnicos via IA, motor de regras e catálogos.",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "api:dev": "pnpm --filter @stillo/api start:dev",
+    "api:prisma": "pnpm --filter @stillo/api prisma",
+    "web:dev": "pnpm --filter @stillo/web dev",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "demo:build": "pnpm --filter @stillo/web build:demo",
+    "demo:deploy": "pnpm demo:build && rm -rf .deploy/stillo-ia && mkdir -p .deploy/stillo-ia && cp -a apps/web/dist/. .deploy/stillo-ia/ && cd .deploy/stillo-ia && vercel deploy --prod --yes --scope elisonperini-bots-projects"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

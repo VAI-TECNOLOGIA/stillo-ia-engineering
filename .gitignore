@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Prisma
+apps/api/prisma/migrations/dev.db*
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+
+# Uploads / temp de processamento OCR
+tmp/
+uploads/
+storage/
+
+# Coverage
+coverage/
+
+# tsc build artifacts (web)
+apps/web/vite.config.js
+apps/web/vite.config.d.ts
+
+# Deploy staging (Vercel)
+.deploy/
