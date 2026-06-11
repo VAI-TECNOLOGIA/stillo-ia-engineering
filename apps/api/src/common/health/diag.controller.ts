@@ -61,4 +61,32 @@ export class DiagController {
       ambiente: { node: process.version, vercel: !!process.env.VERCEL, region: process.env.VERCEL_REGION ?? 'local' },
     };
   }
+
+  /**
+   * Reporta quais IAs estão configuradas por ENV (sem expor chaves) e se o
+   * CONSENSO entre IAs está ativo. ≥2 IAs → cada upload é lido por todas e os
+   * campos críticos precisam concordar; <2 → leitura única (sem corroboração).
+   */
+  @Get('ai')
+  diagAi() {
+    const providers = [
+      { provider: 'openai',    env: 'OPENAI_API_KEY',    ativo: !!process.env.OPENAI_API_KEY },
+      { provider: 'anthropic', env: 'ANTHROPIC_API_KEY', ativo: !!process.env.ANTHROPIC_API_KEY },
+      { provider: 'gemini',    env: 'GEMINI_API_KEY',    ativo: !!process.env.GEMINI_API_KEY },
+    ];
+    const ativos = providers.filter((p) => p.ativo).map((p) => p.provider);
+    const consensoAtivo = ativos.length >= 2;
+    return {
+      consensoAtivo,
+      modo: consensoAtivo
+        ? `consenso entre ${ativos.length} IAs`
+        : ativos.length === 1 ? `1 IA (${ativos[0]}) — sem corroboração` : 'nenhuma IA configurada',
+      ativos,
+      providers,
+      veredito: consensoAtivo
+        ? `Consenso ${ativos.join(' + ')} ATIVO: cada upload é lido pelas ${ativos.length} IAs de forma independente; ` +
+          `os campos críticos precisam concordar — divergência/ilegível vira pendência e trava o orçamento.`
+        : 'Consenso inativo — configure ao menos 2 chaves (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY).',
+    };
+  }
 }

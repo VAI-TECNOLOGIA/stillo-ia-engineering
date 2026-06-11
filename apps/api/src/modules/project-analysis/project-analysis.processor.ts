@@ -7,6 +7,9 @@ import { ExtractorRegistry } from './extractors/extractor.registry';
 import { PdfRasterService } from './pdf-raster.service';
 import { ProjectConsolidatorService } from './project-consolidator.service';
 import { ProjectValidationService } from './project-validation.service';
+import { ConsensusExtractionService } from './consensus/consensus-extraction.service';
+import { AiService } from '../ai/ai.service';
+import type { ProviderNome } from '../ai/ai.types';
 import type { DocumentoAnalisado } from './consolidation.types';
 
 /**
@@ -28,6 +31,8 @@ export class ProjectAnalysisProcessor {
     private readonly raster: PdfRasterService,
     private readonly consolidator: ProjectConsolidatorService,
     private readonly validator: ProjectValidationService,
+    private readonly ai: AiService,
+    private readonly consensusExtraction: ConsensusExtractionService,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
   ) {}
 
@@ -182,19 +187,71 @@ export class ProjectAnalysisProcessor {
       }
 
       await this.prisma.documentAnalysis.update({ where: { id: doc.id }, data: { status: 'EXTRAINDO' } });
-      const { extracao, erro } = await extractor.extrair(tenantId, texto, imagens);
+
+      // CONSENSO ENTRE IAs (ETAPA 2): cada IA configurada lê o MESMO arquivo de forma
+      // INDEPENDENTE; os campos numéricos críticos precisam concordar. Divergência ou
+      // leitura por uma só IA → notificação → vira pendência (trava o orçamento + avisa).
+      // Com menos de 2 IAs ativas não há corroboração possível → fallback p/ leitura única.
+      const ativos = await this.ai.providersAtivos(tenantId);
+      const ORDEM_CANONICA: ProviderNome[] = ['openai', 'anthropic', 'gemini'];
+
+      let extracao: unknown = null;
+      let erro: string | null = null;
+      let modeloIa: string;
+
+      if (ativos.length >= 2) {
+        const consenso = await this.consensusExtraction.extrairComConsenso(tenantId, documentType, texto, imagens);
+        // Extração estruturada CANÔNICA (com evidências) p/ o consolidador: prioriza a
+        // IA de visão mais forte (openai); senão, a 1ª que leu com sucesso.
+        const canonico = [...consenso.porProvider]
+          .filter((p) => p.extracao)
+          .sort((a, b) => ORDEM_CANONICA.indexOf(a.provider) - ORDEM_CANONICA.indexOf(b.provider))[0];
+        const extracaoCanonica = canonico?.extracao ?? null;
+
+        // Anexa o rastro do consenso (quem leu o quê, onde divergiu) p/ log/auditoria.
+        extracao = extracaoCanonica
+          ? {
+              ...(extracaoCanonica as object),
+              __consenso: {
+                providersUsados: consenso.providersUsados,
+                aprovado: consenso.aprovado,
+                confirmados: consenso.confirmados.length,
+                notificacoes: consenso.notificacoes,
+                campos: consenso.consensos.map((c) => ({
+                  campo: c.campo, status: c.status, valor: c.valor, leram: c.leram, concordam: c.concordam,
+                })),
+                porProvider: consenso.porProvider.map((p) => ({ provider: p.provider, ok: !!p.extracao, erro: p.erro ?? null })),
+              },
+            }
+          : null;
+
+        erro = consenso.notificacoes.length
+          ? `Consenso 3-IA: ${consenso.notificacoes.join(' | ')}`
+          : (extracaoCanonica ? null : 'Nenhuma das IAs conseguiu ler este documento.');
+        modeloIa = `consenso: ${consenso.providersUsados.join(' + ')}`;
+        this.logger.log(
+          `[${doc.arquivo.nomeOriginal}] consenso ${consenso.providersUsados.join('+')} · ` +
+          `${consenso.confirmados.length} campo(s) confirmado(s) · ${consenso.notificacoes.length} pendência(s)`,
+        );
+      } else {
+        // Fallback: 1 IA (sem corroboração possível entre modelos).
+        const res = await extractor.extrair(tenantId, texto, imagens);
+        extracao = res.extracao;
+        erro = res.erro ?? null;
+        modeloIa = ativos[0] ? `1 IA: ${ativos[0]}` : (process.env.OPENAI_MODEL ?? 'gpt-4o');
+      }
 
       await this.prisma.documentAnalysis.update({
         where: { id: doc.id },
         data: {
           status: extracao ? 'EXTRAIDO' : 'FALHA',
           extracao: (extracao ?? {}) as object,
-          erro: erro ?? null,
-          modeloIa: process.env.OPENAI_MODEL ?? 'gpt-4o',
+          erro,
+          modeloIa,
         },
       });
       base.extracao = extracao;
-      base.erro = erro ?? null;
+      base.erro = erro;
       return base;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
