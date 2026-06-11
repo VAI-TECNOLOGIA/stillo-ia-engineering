@@ -15,7 +15,7 @@ export class GeminiProvider implements AiProvider {
   private readonly baseUrl = process.env.GEMINI_BASE_URL ?? 'https://generativelanguage.googleapis.com/v1beta';
 
   async complete(creds: AiCredentials, messages: ChatMessage[], options: CompletionOptions = {}): Promise<CompletionResult> {
-    const model = options.model ?? creds.model ?? 'gemini-2.0-flash';
+    const model = options.model ?? creds.model ?? 'gemini-2.5-flash';
 
     const system = messages.filter((m) => m.role === 'system').map((m) => this.texto(m.content)).join('\n\n');
     const contents = messages.filter((m) => m.role !== 'system').map((m) => ({
