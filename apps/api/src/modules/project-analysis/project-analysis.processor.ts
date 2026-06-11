@@ -136,8 +136,10 @@ export class ProjectAnalysisProcessor {
       });
 
       const ehPdf = doc.arquivo.mimeType === 'application/pdf' || doc.arquivo.nomeOriginal.toLowerCase().endsWith('.pdf');
-      const precisaVisao = ehPdf && (ocr.metodo === 'sem-texto' || PdfRasterService.ehPranchaGrafica(ocr.paginas));
-      const imagens = precisaVisao ? await this.raster.paginasComoImagens(buffer) : [];
+      // Visão p/ CLASSIFICAÇÃO: só se escaneado ou prancha gráfica (carimbo como imagem).
+      let imagens: string[] = ehPdf && (ocr.metodo === 'sem-texto' || PdfRasterService.ehPranchaGrafica(ocr.paginas))
+        ? await this.raster.paginasComoImagens(buffer)
+        : [];
 
       // 2. ETAPA 1 — classificar ANTES de extrair (pula se já classificado manualmente)
       await this.prisma.documentAnalysis.update({ where: { id: doc.id }, data: { status: 'CLASSIFICANDO' } });
@@ -166,6 +168,17 @@ export class ProjectAnalysisProcessor {
         });
         base.erro = 'sem disciplina';
         return base;
+      }
+
+      // VISÃO PARA EXTRAÇÃO: plantas CAD têm o texto EMBARALHADO (cotas/labels sem
+      // posição) — o texto-sopa não basta. Forçar leitura por IMAGEM nas disciplinas
+      // de geometria/equipamentos, mesmo havendo texto. Memorial é texto puro (não precisa).
+      const DISCIPLINAS_VISAO = new Set<string>([
+        'ARQUITETONICO', 'CORTES', 'DETALHES_EXECUTIVOS', 'IMPLANTACAO', 'LAZER',
+        'PAISAGISMO', 'ESTRUTURAL', 'HIDRAULICO', 'ELETRICO', 'EQUIPAMENTOS', 'CASA_DE_MAQUINAS',
+      ]);
+      if (ehPdf && imagens.length === 0 && DISCIPLINAS_VISAO.has(documentType)) {
+        imagens = await this.raster.paginasComoImagens(buffer);
       }
 
       await this.prisma.documentAnalysis.update({ where: { id: doc.id }, data: { status: 'EXTRAINDO' } });
