@@ -4,6 +4,11 @@
  * ou cai no fallback de ambiente.
  */
 export const AI_PROVIDER = Symbol('AI_PROVIDER');
+/** Lista de todos os adapters registrados (p/ consenso multi-IA). */
+export const AI_PROVIDERS = Symbol('AI_PROVIDERS');
+
+/** Provedores suportados no consenso. */
+export type ProviderNome = 'openai' | 'anthropic' | 'gemini';
 
 export interface AiCredentials {
   apiKey: string;
@@ -37,6 +42,14 @@ export interface CompletionResult {
 }
 
 export interface AiProvider {
+  /** Identidade do adapter — usada no consenso p/ rotular cada voto. */
+  readonly nome: ProviderNome;
   complete(creds: AiCredentials, messages: ChatMessage[], options?: CompletionOptions): Promise<CompletionResult>;
   embed(creds: AiCredentials, texts: string[]): Promise<number[][]>;
+}
+
+/** Util: extrai media_type + base64 puro de um data URL (p/ Anthropic/Gemini). */
+export function parseDataUrl(url: string): { mediaType: string; base64: string } | null {
+  const m = /^data:([^;]+);base64,(.+)$/s.exec(url);
+  return m ? { mediaType: m[1], base64: m[2] } : null;
 }

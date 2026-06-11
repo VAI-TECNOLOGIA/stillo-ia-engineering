@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type { ZodType, ZodTypeDef } from 'zod';
 import { AiService } from '../../ai/ai.service';
-import type { ChatContentPart, ChatMessage } from '../../ai/ai.types';
+import type { ChatContentPart, ChatMessage, ProviderNome } from '../../ai/ai.types';
 import { limparJson } from '../evidence.schema';
 
 /**
@@ -59,7 +59,7 @@ export abstract class BaseDisciplineExtractor<T> {
    *    (cotas posicionadas, carimbo, geometria — o que o texto nunca captura)
    * Com imagens, o texto vira contexto complementar.
    */
-  async extrair(tenantId: string, texto: string, imagens: string[] = []): Promise<ResultadoExtracao<T>> {
+  async extrair(tenantId: string, texto: string, imagens: string[] = [], provider?: ProviderNome): Promise<ResultadoExtracao<T>> {
     const temTexto = !!texto && texto.trim().length >= 20;
     if (!temTexto && imagens.length === 0) {
       return { extracao: null, erro: 'Documento sem texto legível e sem páginas rasterizadas — leitura impossível.' };
@@ -88,7 +88,10 @@ export abstract class BaseDisciplineExtractor<T> {
     }
 
     try {
-      const res = await this.ai.complete(tenantId, messages, { jsonMode: true, temperature: 0 });
+      // provider explícito → consenso multi-IA; senão → provider default (openai)
+      const res = provider
+        ? await this.ai.completeWith(tenantId, provider, messages, { jsonMode: true, temperature: 0 })
+        : await this.ai.complete(tenantId, messages, { jsonMode: true, temperature: 0 });
       const parsed = this.schema.parse(limparJson(res.content));
       return { extracao: parsed };
     } catch (e) {

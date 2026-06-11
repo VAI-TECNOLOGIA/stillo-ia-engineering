@@ -11,8 +11,13 @@ export interface OpenAiIntegracao {
   vinculadoPorId?: string;
 }
 
+/** Mesma forma p/ qualquer provider de IA (Anthropic/Gemini) — consenso multi-IA. */
+export type ProviderIntegracao = OpenAiIntegracao;
+
 export interface TenantIntegracoes {
   openai?: OpenAiIntegracao;
+  anthropic?: ProviderIntegracao; // Claude (consenso)
+  gemini?: ProviderIntegracao;    // Google Gemini (consenso)
 }
 
 export interface TenantConfig {

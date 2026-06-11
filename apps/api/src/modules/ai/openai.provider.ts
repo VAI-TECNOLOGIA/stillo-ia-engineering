@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { AiCredentials, AiProvider, ChatMessage, CompletionOptions, CompletionResult } from './ai.types';
+import type { AiCredentials, AiProvider, ChatMessage, CompletionOptions, CompletionResult, ProviderNome } from './ai.types';
 
 /**
  * Adapter OpenAI via REST (sem SDK — mantém o bundle leve e o domínio desacoplado).
@@ -7,6 +7,7 @@ import type { AiCredentials, AiProvider, ChatMessage, CompletionOptions, Complet
  */
 @Injectable()
 export class OpenAiProvider implements AiProvider {
+  readonly nome: ProviderNome = 'openai';
   private readonly defaultBaseUrl = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
 
   async complete(creds: AiCredentials, messages: ChatMessage[], options: CompletionOptions = {}): Promise<CompletionResult> {

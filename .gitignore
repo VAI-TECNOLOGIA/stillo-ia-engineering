@@ -41,3 +41,7 @@ apps/web/vite.config.d.ts
 
 # Deploy staging (Vercel)
 .deploy/
+
+# Projetos de exemplo do cliente (PDFs pesados — material de teste, não versionar)
+projetos-exemplo.zip
+projetos-exemplo/

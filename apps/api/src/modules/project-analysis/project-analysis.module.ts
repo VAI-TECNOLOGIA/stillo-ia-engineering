@@ -12,6 +12,8 @@ import { ExtractorRegistry } from './extractors/extractor.registry';
 import { PdfRasterService } from './pdf-raster.service';
 import { ProjectConsolidatorService } from './project-consolidator.service';
 import { ProjectValidationService } from './project-validation.service';
+import { ConsensusService } from './consensus/consensus.service';
+import { ConsensusExtractionService } from './consensus/consensus-extraction.service';
 import { ProjectAnalysisProcessor } from './project-analysis.processor';
 import { ProjectAnalysisQueue } from './project-analysis.queue';
 import { ProjectAnalysisService } from './project-analysis.service';
@@ -38,6 +40,8 @@ import { ProjectAnalysisController } from './project-analysis.controller';
     PdfRasterService,
     ProjectConsolidatorService,
     ProjectValidationService,
+    ConsensusService,
+    ConsensusExtractionService,
     ProjectAnalysisProcessor,
     ProjectAnalysisQueue,
     ProjectAnalysisService,
