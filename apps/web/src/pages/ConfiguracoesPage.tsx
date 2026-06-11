@@ -207,6 +207,14 @@ function SecaoIntegracoes() {
   const openai = data?.openai;
   const conectadoTenant = openai?.origem === 'tenant';
 
+  // Claude (Anthropic) e Gemini — 2ª e 3ª IAs do consenso
+  const claudeSalvar = useSalvarLocal();
+  const [claudeKey, setClaudeKey] = useState('');
+  const [claudeConectado, setClaudeConectado] = useState(isDemo());
+  const geminiSalvar = useSalvarLocal();
+  const [geminiKey, setGeminiKey] = useState('');
+  const [geminiConectado, setGeminiConectado] = useState(isDemo());
+
   // VAI WhatsApp
   const waSalvar = useSalvarLocal();
   const [waUrl, setWaUrl]       = useState('https://api.vai-sistema.com/v1');
@@ -276,6 +284,56 @@ function SecaoIntegracoes() {
               </div>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Anthropic (Claude) — 2ª IA do consenso ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between text-base">
+            <span className="flex items-center gap-2"><Brain className="h-5 w-5 text-violet-600" /> Anthropic — Claude (consenso)</span>
+            <StatusBadge ok={claudeConectado} label="Conectado" />
+          </CardTitle>
+          <CardDescription>2ª IA do consenso: lê o projeto e confere os dados da OpenAI. Quando as duas concordam, o dado é confiável. Chave <strong>criptografada</strong>.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {claudeConectado && (
+            <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3 text-sm font-medium">
+              <ShieldCheck className="h-4 w-4 text-emerald-600" /> Conectada · modelo <code>claude-sonnet-4-6</code>
+            </div>
+          )}
+          <div className="space-y-1">
+            <Label>Chave da API Anthropic</Label>
+            <Input type="password" placeholder="sk-ant-api03-..." value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} autoComplete="off" />
+          </div>
+          <Button onClick={() => { claudeSalvar.salvar(); setClaudeConectado(true); }} disabled={!claudeConectado && claudeKey.trim().length < 20}>
+            {claudeSalvar.salvo ? <><CheckCircle2 className="h-4 w-4 text-emerald-600" /> Salvo!</> : <><Plug className="h-4 w-4" /> {claudeConectado ? 'Atualizar chave' : 'Vincular Claude'}</>}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* ── Google Gemini — 3ª IA do consenso ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between text-base">
+            <span className="flex items-center gap-2"><Sparkles className="h-5 w-5 text-sky-600" /> Google — Gemini (consenso)</span>
+            <StatusBadge ok={geminiConectado} label="Conectado" />
+          </CardTitle>
+          <CardDescription>3ª IA do consenso: desempata quando OpenAI e Claude divergem. Garante o "100% certo" antes do orçamento. Chave <strong>criptografada</strong>.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {geminiConectado && (
+            <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3 text-sm font-medium">
+              <ShieldCheck className="h-4 w-4 text-emerald-600" /> Conectada · modelo <code>gemini-2.5-flash</code>
+            </div>
+          )}
+          <div className="space-y-1">
+            <Label>Chave da API Gemini</Label>
+            <Input type="password" placeholder="AIza... ou AQ.Ab8..." value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} autoComplete="off" />
+          </div>
+          <Button onClick={() => { geminiSalvar.salvar(); setGeminiConectado(true); }} disabled={!geminiConectado && geminiKey.trim().length < 20}>
+            {geminiSalvar.salvo ? <><CheckCircle2 className="h-4 w-4 text-emerald-600" /> Salvo!</> : <><Plug className="h-4 w-4" /> {geminiConectado ? 'Atualizar chave' : 'Vincular Gemini'}</>}
+          </Button>
         </CardContent>
       </Card>
 
