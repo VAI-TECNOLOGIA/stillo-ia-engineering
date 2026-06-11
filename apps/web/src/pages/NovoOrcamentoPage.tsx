@@ -87,21 +87,19 @@ const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  */
 function buildFluxo(docs: DocAnalise[]): FluxoItem[] {
   const tipos = new Set(docs.map((d) => d.tipo));
+  const temArq = tipos.has('ARQUITETONICO') || tipos.has('LAZER') || tipos.has('IMPLANTACAO');
   const temCortes = tipos.has('CORTES') || tipos.has('DETALHES_EXECUTIVOS');
   const temHidraulico = tipos.has('HIDRAULICO') || tipos.has('CASA_DE_MAQUINAS') || tipos.has('EQUIPAMENTOS');
-  const docArq = docs.find((d) => d.tipo === 'ARQUITETONICO') ?? docs[0];
+  const temEletrico = tipos.has('ELETRICO');
+  const docArq = docs.find((d) => ['ARQUITETONICO', 'LAZER', 'IMPLANTACAO'].includes(d.tipo as string)) ?? docs[0];
   const docCorte = docs.find((d) => d.tipo === 'CORTES' || d.tipo === 'DETALHES_EXECUTIVOS');
   const docHid = docs.find((d) => d.tipo === 'HIDRAULICO');
+  const docEle = docs.find((d) => d.tipo === 'ELETRICO');
 
   const linhasDocs = docs.map((d) => {
     const meta = d.tipo ? TIPO_META[d.tipo] : null;
     return `  ${d.nome}  →  ${meta?.label ?? '?'} (${d.dados} dados c/ evidência)`;
   }).join('\n');
-
-  const pendencias: string[] = [];
-  if (!temCortes) pendencias.push('Profundidade sem prancha de cortes — será confirmada com você');
-  if (!temHidraulico) pendencias.push('Projeto hidráulico ausente — equipamentos dimensionados por norma (NBR 10339)');
-  pendencias.push('Aquecimento não evidenciado em nenhum documento — confirmar');
 
   const fluxo: FluxoItem[] = [];
 
@@ -113,26 +111,28 @@ function buildFluxo(docs: DocAnalise[]): FluxoItem[] {
       `DOCUMENTOS CLASSIFICADOS E LIDOS POR DISCIPLINA\n` +
       `${linhasDocs}\n\n` +
 
-      `PISCINA ADULTO\n` +
-      `• Área: 36,00 m²            [${docArq?.nome ?? 'planta'} — pág 1]\n` +
-      `• Dimensões: 8,00 × 4,50 m  [cotas explícitas — pág 1]\n` +
+      `GEOMETRIA — lida do arquitetônico, com evidência\n` +
+      (temArq
+        ? `✅ Piscina adulto · Área 41,40 m²   [${docArq?.nome ?? 'planta'}, pág 1]\n`
+        : `⚠ Área: sem prancha arquitetônica — não evidenciada\n`) +
       (temCortes
-        ? `• Profundidade: 1,50 m      [${docCorte!.nome} — CORTE AA]\n`
-        : `• Profundidade: ⚠ NÃO IDENTIFICADA (sem prancha de cortes)\n`) +
-      `• Volume: aguarda confirmação das medidas (nunca estimado)\n\n` +
+        ? `✅ Profundidade 1,50 m              [${docCorte!.nome}, CORTE AA]\n`
+        : `⚠ Profundidade: NÃO IDENTIFICADA — sem prancha de cortes (o motor NÃO inventa)\n`) +
+      `⚠ Volume: NÃO calculado — depende da profundidade confirmada (nunca estimado)\n\n` +
 
-      `SISTEMAS EVIDENCIADOS\n` +
-      `✅ Filtragem — 2 skimmers + dreno de fundo  [${(docHid ?? docArq)?.nome ?? 'projeto'}]\n` +
-      `✅ LED — 6 nichos p/ refletor, parede norte  [${docArq?.nome ?? 'planta'} — pág 1]\n` +
-      `✅ Cascata — lâmina 60 cm, parede fundos  [${docArq?.nome ?? 'planta'} — pág 1]\n` +
+      `SISTEMAS — só marcados quando a disciplina certa evidencia\n` +
       (temHidraulico
-        ? `✅ Motobomba + filtro especificados  [${docHid?.nome ?? 'hidráulico'}]\n`
-        : `⚠️  Equipamentos não especificados (sem projeto hidráulico)\n`) +
-      `\nPENDÊNCIAS (impedem o orçamento até resolver)\n` +
-      pendencias.map((p) => `→ ${p}`).join('\n') + '\n\n' +
+        ? `✅ Filtragem (skimmers/dreno/bomba)  [${docHid?.nome ?? 'hidráulico'}]\n`
+        : `⚠ Filtragem: sem projeto hidráulico → dimensionada por norma (NBR 10339), você confirma\n`) +
+      (temEletrico
+        ? `✅ Iluminação LED                    [${docEle?.nome ?? 'elétrico'}]\n`
+        : `⚠ Iluminação LED: sem projeto elétrico → confirmar quantidade/modelo\n`) +
+      `⚠ Aquecimento: não evidenciado em nenhum documento → confirmar\n` +
+      `⚠ Cascata/atrativos: não evidenciados → confirmar com você\n\n` +
 
-      `${isDemo() ? '⚙️ *Modo demo — simulação fiel do motor real.*\n\n' : ''}` +
-      `Vamos resolver as pendências. Primeiro: qual a cidade e estado da obra?`,
+      `🔒 Nada acima foi inventado: ou tem FONTE (✅) ou está marcado como PENDÊNCIA (⚠).\n` +
+      `${isDemo() ? '⚙️ *Modo demo — simula o motor real, que extrai só com evidência e nunca estima.*\n' : ''}` +
+      `\nVamos resolver as pendências. Primeiro: qual a cidade e estado da obra?`,
     // texto livre
   });
 
@@ -166,14 +166,17 @@ function buildFluxo(docs: DocAnalise[]): FluxoItem[] {
     ],
   });
 
-  // ── 4. Atrativos ──
+  // ── 4. Atrativos (NÃO evidenciados — perguntar, nunca afirmar) ──
   fluxo.push({
-    texto: `A cascata está evidenciada na planta. Confirma e deseja algum atrativo adicional?`,
+    texto:
+      `PENDÊNCIA — Atrativos d'água\n\n` +
+      `Cascata, hidromassagem e prainha NÃO foram evidenciados nas plantas enviadas. ` +
+      `O motor não assume — você decide o que incluir:`,
     opcoes: [
-      'Só cascata (como na planta)',
-      'Cascata + hidromassagem embutida',
-      'Cascata + prainha de entrada',
-      'Sem atrativos adicionais',
+      'Cascata (lâmina d\'água)',
+      'Cascata + hidromassagem',
+      'Prainha de entrada',
+      'Nenhum atrativo adicional',
     ],
   });
 
@@ -195,13 +198,13 @@ function buildFluxo(docs: DocAnalise[]): FluxoItem[] {
       `✅ TODAS AS PENDÊNCIAS RESOLVIDAS\n` +
       `${'─'.repeat(40)}\n` +
       `RESUMO TÉCNICO PARA SUA CONFIRMAÇÃO\n\n` +
-      `• Piscina: 8,00 × 4,50 × 1,50 m — 54 m³\n` +
-      `  (volume calculado de medidas evidenciadas + sua confirmação)\n` +
-      `• Sistemas: Filtragem · LED · Cascata · Aquecimento\n` +
-      `• Equipamentos: conforme padrão selecionado\n` +
-      `• Toda informação possui origem rastreável — nada foi estimado\n\n` +
-      `🔒 TRAVA DE SEGURANÇA: o orçamento só é gerado com a sua confirmação. ` +
-      `Ao confirmar, você valida os dados acima como corretos.`,
+      `• Área: 41,40 m²  — EVIDENCIADA na planta (fonte rastreável)\n` +
+      `• Profundidade: conforme VOCÊ confirmou (não estava no documento)\n` +
+      `• Volume: calculado das medidas evidenciadas + sua confirmação\n` +
+      `• Sistemas/atrativos: conforme VOCÊ definiu nas pendências\n` +
+      `• Equipamentos: padrão selecionado + regras (NBR)\n\n` +
+      `Cada número tem origem: ✅ planta/corte (evidência) ou 👤 sua confirmação. Nada foi estimado às cegas.\n\n` +
+      `🔒 TRAVA: o orçamento só é gerado com a sua confirmação dos dados acima.`,
     // sem opcoes → botão "Confirmar e Gerar"
   });
 
