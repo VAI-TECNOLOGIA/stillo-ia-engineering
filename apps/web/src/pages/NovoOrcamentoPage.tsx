@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Sparkles, CloudUpload, Loader2, FileText, Send,
-  CheckCircle2, ArrowRight, X, Plus, AlertTriangle,
-  ShieldCheck, FileSearch, Layers,
+  Sparkles, CloudUpload, Loader2, FileText, Send, CheckCircle2, ArrowRight,
+  X, Plus, AlertTriangle, ShieldCheck, FileSearch, Layers,
+  Ruler, Waves, Flame, Lightbulb, Filter, MapPin, Award, UserCheck, Calculator,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,22 +14,23 @@ import { isDemo } from '@/lib/demo';
 /**
  * Fluxo de geração de orçamento — MOTOR DE LEITURA v2.
  *
- * Pipeline visível ao usuário (espelha o backend):
- *  1. CLASSIFICAÇÃO — cada PDF é identificado por disciplina antes de ler
- *  2. EXTRAÇÃO ESPECIALIZADA — cada documento lido só pela sua disciplina
- *  3. CONSOLIDAÇÃO — dados unidos com EVIDÊNCIA (fonte + página)
- *  4. PENDÊNCIAS — o que não foi evidenciado vira pergunta (nunca inferência)
- *  5. CONFIRMAÇÃO HUMANA — trava: orçamento só libera após confirmar
+ * UX (a pedido): NÃO despeja relatório técnico quando algo não está claro —
+ * PERGUNTA ao usuário, item por item. Ao final, mostra uma TELA VISUAL de
+ * confirmação de TODAS as medidas (com a origem de cada dado) e só então
+ * libera "Gerar orçamento".
  */
 
-type Step = 'upload' | 'analise' | 'perguntas' | 'pronto';
+type Step = 'upload' | 'analise' | 'perguntas' | 'confirmar';
 
 interface Msg {
   papel: 'assistant' | 'user';
   texto: string;
 }
 
-interface FluxoItem {
+type Campo = 'cidade' | 'profundidade' | 'aquecimento' | 'atrativos' | 'padrao';
+
+interface Pergunta {
+  campo: Campo;
   texto: string;
   opcoes?: string[];
 }
@@ -41,9 +42,9 @@ type TipoDoc =
 
 interface DocAnalise {
   nome: string;
-  tipo: TipoDoc | null;            // null = ainda classificando
+  tipo: TipoDoc | null;
   fase: 'fila' | 'classificando' | 'extraindo' | 'ok';
-  dados: number;                   // qtd de dados com evidência
+  dados: number;
 }
 
 const TIPO_META: Record<TipoDoc, { label: string; cor: string }> = {
@@ -75,148 +76,76 @@ function classificarPorNome(nome: string): TipoDoc {
   if (/implanta|situa[cç]/.test(n)) return 'IMPLANTACAO';
   if (/paisag/.test(n)) return 'PAISAGISMO';
   if (/lazer/.test(n)) return 'LAZER';
-  return 'ARQUITETONICO'; // planta baixa é o default natural de projeto de piscina
+  return 'ARQUITETONICO';
 }
 
 const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * Monta o fluxo de consolidação + pendências a partir dos documentos CLASSIFICADOS.
- * Pendência é dinâmica: sem prancha de cortes → profundidade vira pergunta
- * (confirmação humana), nunca um valor inventado.
+ * Monta APENAS as perguntas das pendências (o que o PDF não deixou claro).
+ * Sem relatório-dump: o motor pergunta direto, item por item.
  */
-function buildFluxo(docs: DocAnalise[]): FluxoItem[] {
+function buildPerguntas(docs: DocAnalise[]): Pergunta[] {
   const tipos = new Set(docs.map((d) => d.tipo));
-  const temArq = tipos.has('ARQUITETONICO') || tipos.has('LAZER') || tipos.has('IMPLANTACAO');
   const temCortes = tipos.has('CORTES') || tipos.has('DETALHES_EXECUTIVOS');
   const temHidraulico = tipos.has('HIDRAULICO') || tipos.has('CASA_DE_MAQUINAS') || tipos.has('EQUIPAMENTOS');
-  const temEletrico = tipos.has('ELETRICO');
   const docArq = docs.find((d) => ['ARQUITETONICO', 'LAZER', 'IMPLANTACAO'].includes(d.tipo as string)) ?? docs[0];
-  const docCorte = docs.find((d) => d.tipo === 'CORTES' || d.tipo === 'DETALHES_EXECUTIVOS');
-  const docHid = docs.find((d) => d.tipo === 'HIDRAULICO');
-  const docEle = docs.find((d) => d.tipo === 'ELETRICO');
 
-  const linhasDocs = docs.map((d) => {
-    const meta = d.tipo ? TIPO_META[d.tipo] : null;
-    return `  ${d.nome}  →  ${meta?.label ?? '?'} (${d.dados} dados c/ evidência)`;
-  }).join('\n');
+  const perguntas: Pergunta[] = [];
 
-  const fluxo: FluxoItem[] = [];
-
-  // ── 1. RELATÓRIO DE CONSOLIDAÇÃO (com evidências) + 1ª pergunta ──
-  fluxo.push({
+  perguntas.push({
+    campo: 'cidade',
     texto:
-      `📋 PROJETO CONSOLIDADO — MOTOR DE LEITURA v2\n` +
-      `${'─'.repeat(40)}\n` +
-      `DOCUMENTOS CLASSIFICADOS E LIDOS POR DISCIPLINA\n` +
-      `${linhasDocs}\n\n` +
-
-      `GEOMETRIA — lida do arquitetônico, com evidência\n` +
-      (temArq
-        ? `✅ Piscina adulto · Área 41,40 m²   [${docArq?.nome ?? 'planta'}, pág 1]\n`
-        : `⚠ Área: sem prancha arquitetônica — não evidenciada\n`) +
-      (temCortes
-        ? `✅ Profundidade 1,50 m              [${docCorte!.nome}, CORTE AA]\n`
-        : `⚠ Profundidade: NÃO IDENTIFICADA — sem prancha de cortes (o motor NÃO inventa)\n`) +
-      `⚠ Volume: NÃO calculado — depende da profundidade confirmada (nunca estimado)\n\n` +
-
-      `SISTEMAS — só marcados quando a disciplina certa evidencia\n` +
-      (temHidraulico
-        ? `✅ Filtragem (skimmers/dreno/bomba)  [${docHid?.nome ?? 'hidráulico'}]\n`
-        : `⚠ Filtragem: sem projeto hidráulico → dimensionada por norma (NBR 10339), você confirma\n`) +
-      (temEletrico
-        ? `✅ Iluminação LED                    [${docEle?.nome ?? 'elétrico'}]\n`
-        : `⚠ Iluminação LED: sem projeto elétrico → confirmar quantidade/modelo\n`) +
-      `⚠ Aquecimento: não evidenciado em nenhum documento → confirmar\n` +
-      `⚠ Cascata/atrativos: não evidenciados → confirmar com você\n\n` +
-
-      `🔒 Nada acima foi inventado: ou tem FONTE (✅) ou está marcado como PENDÊNCIA (⚠).\n` +
-      `${isDemo() ? '⚙️ *Modo demo — simula o motor real, que extrai só com evidência e nunca estima.*\n' : ''}` +
-      `\nVamos resolver as pendências. Primeiro: qual a cidade e estado da obra?`,
-    // texto livre
+      `Li e classifiquei ${docs.length === 1 ? 'o documento' : `os ${docs.length} documentos`}. ` +
+      `A área da piscina está evidenciada na planta (${docArq?.nome ?? 'arquitetônico'}). ` +
+      `Algumas informações não estavam claras — vou confirmar com você, rapidinho.\n\n` +
+      `Primeiro: qual a cidade e o estado da obra?`,
   });
 
-  // ── 2. Profundidade (só se não houver cortes) — confirmação humana ──
   if (!temCortes) {
-    fluxo.push({
-      texto:
-        `PENDÊNCIA 1 — Profundidade\n\n` +
-        `Nenhum documento enviado contém corte/seção com a cota de profundidade. ` +
-        `O motor NÃO estima esse valor — ele muda todo o dimensionamento.\n\n` +
-        `Qual a profundidade da piscina?`,
-      opcoes: [
-        '1,20 m (recreação)',
-        '1,40 m (padrão residencial)',
-        '1,50 m (confirmo este valor)',
-        '1,20 a 1,60 m (fundo inclinado)',
-      ],
+    perguntas.push({
+      campo: 'profundidade',
+      texto: `A PROFUNDIDADE não estava na planta (faltou a prancha de cortes). O motor não inventa — qual é?`,
+      opcoes: ['1,20 m (recreação)', '1,40 m (padrão residencial)', '1,50 m', '1,20 a 1,60 m (fundo inclinado)'],
     });
   }
 
-  // ── 3. Aquecimento ──
-  fluxo.push({
-    texto:
-      `PENDÊNCIA ${temCortes ? '1' : '2'} — Aquecimento\n\n` +
-      `Nenhum dos ${docs.length} documento(s) evidencia sistema de aquecimento. ` +
-      `Para ~54 m³ as opções indicadas:`,
-    opcoes: [
-      'Trocador de calor a gás (instalação simples)',
-      'Bomba de calor elétrica (+ eficiente, menor custo operacional)',
-      'Sem aquecimento',
-    ],
+  perguntas.push({
+    campo: 'aquecimento',
+    texto: `AQUECIMENTO não foi evidenciado em nenhum documento. Como deseja?`,
+    opcoes: ['Trocador de calor a gás', 'Bomba de calor elétrica', 'Sem aquecimento'],
   });
 
-  // ── 4. Atrativos (NÃO evidenciados — perguntar, nunca afirmar) ──
-  fluxo.push({
-    texto:
-      `PENDÊNCIA — Atrativos d'água\n\n` +
-      `Cascata, hidromassagem e prainha NÃO foram evidenciados nas plantas enviadas. ` +
-      `O motor não assume — você decide o que incluir:`,
-    opcoes: [
-      'Cascata (lâmina d\'água)',
-      'Cascata + hidromassagem',
-      'Prainha de entrada',
-      'Nenhum atrativo adicional',
-    ],
+  perguntas.push({
+    campo: 'atrativos',
+    texto: `ATRATIVOS (cascata, hidromassagem, prainha) não foram evidenciados. Deseja incluir algum?`,
+    opcoes: ['Cascata (lâmina d\'água)', 'Cascata + hidromassagem', 'Prainha de entrada', 'Nenhum atrativo'],
   });
 
-  // ── 5. Padrão de equipamentos ──
-  fluxo.push({
+  perguntas.push({
+    campo: 'padrao',
     texto: temHidraulico
-      ? `O projeto hidráulico especifica os equipamentos. Manter a especificação ou ajustar o padrão?`
-      : `Sem projeto hidráulico, os equipamentos serão dimensionados por norma. Qual padrão?`,
-    opcoes: [
-      'Econômico — custo-benefício, marcas nacionais',
-      'Padrão — qualidade sólida, mais pedido ⭐',
-      'Premium — melhores equipamentos do mercado',
-    ],
+      ? `Por fim — o padrão dos equipamentos (o hidráulico especifica, você pode ajustar):`
+      : `Por fim — o padrão dos equipamentos (serão dimensionados por norma NBR 10339):`,
+    opcoes: ['Econômico', 'Padrão ⭐', 'Premium'],
   });
 
-  // ── 6. RESUMO p/ CONFIRMAÇÃO HUMANA (trava do orçamento) ──
-  fluxo.push({
-    texto:
-      `✅ TODAS AS PENDÊNCIAS RESOLVIDAS\n` +
-      `${'─'.repeat(40)}\n` +
-      `RESUMO TÉCNICO PARA SUA CONFIRMAÇÃO\n\n` +
-      `• Área: 41,40 m²  — EVIDENCIADA na planta (fonte rastreável)\n` +
-      `• Profundidade: conforme VOCÊ confirmou (não estava no documento)\n` +
-      `• Volume: calculado das medidas evidenciadas + sua confirmação\n` +
-      `• Sistemas/atrativos: conforme VOCÊ definiu nas pendências\n` +
-      `• Equipamentos: padrão selecionado + regras (NBR)\n\n` +
-      `Cada número tem origem: ✅ planta/corte (evidência) ou 👤 sua confirmação. Nada foi estimado às cegas.\n\n` +
-      `🔒 TRAVA: o orçamento só é gerado com a sua confirmação dos dados acima.`,
-    // sem opcoes → botão "Confirmar e Gerar"
-  });
-
-  return fluxo;
+  return perguntas;
 }
 
-const STEP_LABELS = ['Arquivos', 'Classificação', 'Leitura', 'Pendências', 'Orçamento'];
+/** Extrai o primeiro número (m) de uma resposta tipo "1,50 m" → 1.5. */
+function parseProf(s: string): number {
+  const m = s.match(/(\d+[.,]\d+)/);
+  return m ? parseFloat(m[1].replace(',', '.')) : 1.4;
+}
 
-function stepIdx(step: Step, classificou: boolean): number {
+const STEP_LABELS = ['Arquivos', 'Leitura', 'Perguntas', 'Confirmação', 'Orçamento'];
+
+function stepIdx(step: Step): number {
   if (step === 'upload') return 0;
-  if (step === 'analise') return classificou ? 2 : 1;
-  if (step === 'perguntas') return 3;
+  if (step === 'analise') return 1;
+  if (step === 'perguntas') return 2;
+  if (step === 'confirmar') return 3;
   return 4;
 }
 
@@ -224,6 +153,35 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ── Badge de origem do dado (a transparência que vale ouro) ──────────────────
+type Origem = 'evidencia' | 'voce' | 'norma' | 'calculo';
+const ORIGEM_META: Record<Origem, { label: string; cls: string; Icon: React.ComponentType<{ className?: string }> }> = {
+  evidencia: { label: 'Evidenciado na planta', cls: 'bg-emerald-100 text-emerald-700', Icon: CheckCircle2 },
+  voce:      { label: 'Você confirmou',        cls: 'bg-blue-100 text-blue-700',       Icon: UserCheck },
+  norma:     { label: 'Por norma (NBR)',       cls: 'bg-violet-100 text-violet-700',   Icon: ShieldCheck },
+  calculo:   { label: 'Calculado',             cls: 'bg-amber-100 text-amber-700',     Icon: Calculator },
+};
+
+function LinhaMedida({ Icon, rotulo, valor, origem }: {
+  Icon: React.ComponentType<{ className?: string }>; rotulo: string; valor: string; origem: Origem;
+}) {
+  const o = ORIGEM_META[origem];
+  return (
+    <div className="flex items-center gap-3 py-2.5">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+        <Icon className="h-4 w-4 text-muted-foreground" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs text-muted-foreground">{rotulo}</p>
+        <p className="font-semibold leading-tight">{valor}</p>
+      </div>
+      <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', o.cls)}>
+        <o.Icon className="h-3 w-3" /> {o.label}
+      </span>
+    </div>
+  );
 }
 
 export function NovoOrcamentoPage() {
@@ -236,17 +194,16 @@ export function NovoOrcamentoPage() {
   const [docs, setDocs] = useState<DocAnalise[]>([]);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
+  const [perguntas, setPerguntas] = useState<Pergunta[]>([]);
   const [perguntaIdx, setPerguntaIdx] = useState(0);
+  const [respostas, setRespostas] = useState<Partial<Record<Campo, string>>>({});
   const [chatLoading, setChatLoading] = useState(false);
   const [gerando, setGerando] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [fluxo, setFluxo] = useState<FluxoItem[]>([]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [msgs, chatLoading]);
-
-  // ─── Helpers ─────────────────────────────────────────────────────────────────
 
   function mergeFiles(incoming: FileList | File[]) {
     const arr = Array.from(incoming);
@@ -255,12 +212,11 @@ export function NovoOrcamentoPage() {
       return [...prev, ...arr.filter((f) => !names.has(f.name))];
     });
   }
-
   function removeFile(name: string) {
     setFiles((prev) => prev.filter((f) => f.name !== name));
   }
 
-  // ─── Pipeline v2 (visível) ──────────────────────────────────────────────────
+  // ─── Pipeline ────────────────────────────────────────────────────────────────
 
   async function iniciarAnalise() {
     if (files.length === 0) return;
@@ -268,32 +224,28 @@ export function NovoOrcamentoPage() {
     setDocs(iniciais);
     setStep('analise');
 
-    // ETAPA 1+2 por documento: classificar → extrair pela disciplina
     const atualizados = [...iniciais];
     for (let i = 0; i < atualizados.length; i++) {
       atualizados[i] = { ...atualizados[i], fase: 'classificando' };
       setDocs([...atualizados]);
       await pause(650);
-
       const tipo = classificarPorNome(atualizados[i].nome);
       atualizados[i] = { ...atualizados[i], tipo, fase: 'extraindo' };
       setDocs([...atualizados]);
       await pause(900);
-
-      // qtd de dados evidenciados (cosmético, varia por disciplina)
       const dados = tipo === 'ARQUITETONICO' ? 9 : tipo === 'HIDRAULICO' ? 11 : tipo === 'CORTES' ? 4 : tipo === 'MEMORIAL_DESCRITIVO' ? 13 : 6;
       atualizados[i] = { ...atualizados[i], fase: 'ok', dados };
       setDocs([...atualizados]);
       await pause(250);
     }
 
-    // ETAPA 4+7: consolidar + validar → relatório com pendências
     await pause(700);
-    const f = buildFluxo(atualizados);
-    setFluxo(f);
-    setStep('perguntas');
-    setMsgs([{ papel: 'assistant', texto: f[0].texto }]);
+    const qs = buildPerguntas(atualizados);
+    setPerguntas(qs);
+    setRespostas({});
     setPerguntaIdx(0);
+    setMsgs([{ papel: 'assistant', texto: qs[0].texto }]);
+    setStep('perguntas');
   }
 
   async function sendMsg(resposta?: string) {
@@ -301,25 +253,27 @@ export function NovoOrcamentoPage() {
     if (!texto || chatLoading) return;
     setInput('');
     setMsgs((m) => [...m, { papel: 'user', texto }]);
+    // guarda a resposta no campo da pergunta atual
+    const campo = perguntas[perguntaIdx]?.campo;
+    if (campo) setRespostas((r) => ({ ...r, [campo]: texto }));
+
     setChatLoading(true);
-    await pause(700);
+    await pause(650);
     setChatLoading(false);
 
     const next = perguntaIdx + 1;
-    setPerguntaIdx(next);
-
-    if (next < fluxo.length) {
-      setMsgs((m) => [...m, { papel: 'assistant', texto: fluxo[next].texto }]);
-    }
-
-    if (next >= fluxo.length - 1) {
-      setStep('pronto');
+    if (next < perguntas.length) {
+      setPerguntaIdx(next);
+      setMsgs((m) => [...m, { papel: 'assistant', texto: perguntas[next].texto }]);
+    } else {
+      // acabaram as perguntas → tela visual de confirmação
+      setStep('confirmar');
     }
   }
 
   async function gerarOrcamento() {
     setGerando(true);
-    await pause(1800);
+    await pause(1600);
     navigate('/orcamentos/orc1042', { state: { geradoAgora: true } });
   }
 
@@ -331,20 +285,24 @@ export function NovoOrcamentoPage() {
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
-  const classificou = docs.some((d) => d.fase === 'extraindo' || d.fase === 'ok');
-  const curIdx = stepIdx(step, classificou);
-  const currentFluxo = fluxo[perguntaIdx];
-  const hasOpcoes = step === 'perguntas' && !!currentFluxo?.opcoes;
+  const curIdx = stepIdx(step);
+  const atual = perguntas[perguntaIdx];
+  const hasOpcoes = step === 'perguntas' && !!atual?.opcoes;
+
+  // dados derivados p/ a tela de confirmação
+  const temCortes = docs.some((d) => d.tipo === 'CORTES' || d.tipo === 'DETALHES_EXECUTIVOS');
+  const profStr = temCortes ? '1,50 m' : (respostas.profundidade ?? '—');
+  const prof = parseProf(profStr);
+  const volume = (41.4 * prof).toFixed(1).replace('.', ',');
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      {/* Título */}
       <div>
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
           <Sparkles className="h-6 w-6 text-primary" /> Novo Orçamento com IA
         </h1>
         <p className="text-muted-foreground">
-          Envie TODOS os documentos do projeto — cada um é classificado e lido pela disciplina correta.
+          Envie os documentos do projeto — a IA lê, pergunta o que não estiver claro e confirma cada medida com você.
         </p>
       </div>
 
@@ -369,7 +327,7 @@ export function NovoOrcamentoPage() {
         })}
       </div>
 
-      {/* ── UPLOAD ────────────────────────────────────────────────────────────── */}
+      {/* ── UPLOAD ── */}
       {step === 'upload' && (
         <Card>
           <CardContent className="pt-6 space-y-4">
@@ -426,12 +384,10 @@ export function NovoOrcamentoPage() {
                   </div>
                 ))}
                 <p className="text-xs text-muted-foreground">
-                  💡 Quanto mais disciplinas (cortes, hidráulico, memorial), menos pendências o motor abre.
+                  💡 Quanto mais disciplinas (cortes, hidráulico, memorial), menos perguntas a IA faz.
                 </p>
                 <Button className="w-full" size="lg" onClick={iniciarAnalise}>
-                  <Sparkles className="h-4 w-4" />
-                  Analisar com IA
-                  <ArrowRight className="ml-1 h-4 w-4" />
+                  <Sparkles className="h-4 w-4" /> Analisar com IA <ArrowRight className="ml-1 h-4 w-4" />
                 </Button>
               </div>
             )}
@@ -439,13 +395,12 @@ export function NovoOrcamentoPage() {
         </Card>
       )}
 
-      {/* ── ANÁLISE: classificação + extração por disciplina ──────────────────── */}
+      {/* ── ANÁLISE ── */}
       {step === 'analise' && (
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-base">
-              <FileSearch className="h-4 w-4 text-primary" />
-              Classificando e lendo por disciplina
+              <FileSearch className="h-4 w-4 text-primary" /> Classificando e lendo por disciplina
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -476,14 +431,11 @@ export function NovoOrcamentoPage() {
                 }
               </div>
             ))}
-
             {docs.every((d) => d.fase === 'ok') && (
               <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">
-                <Layers className="h-4 w-4 shrink-0" />
-                Consolidando projeto — unindo as disciplinas sem sobrescrever dados…
+                <Layers className="h-4 w-4 shrink-0" /> Consolidando — e separando o que precisa confirmar com você…
               </div>
             )}
-
             <p className="text-center text-xs text-muted-foreground">
               Motor v2 · GPT-4o Vision lê as pranchas como imagem · zero inferência
             </p>
@@ -491,35 +443,31 @@ export function NovoOrcamentoPage() {
         </Card>
       )}
 
-      {/* ── PERGUNTAS / PRONTO ────────────────────────────────────────────────── */}
-      {(step === 'perguntas' || step === 'pronto') && (
+      {/* ── PERGUNTAS (conversacional, sem relatório-dump) ── */}
+      {step === 'perguntas' && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
-              <Sparkles className="h-4 w-4 text-primary" />
-              IA de Orçamento
-              {step === 'perguntas' && perguntaIdx > 0 && perguntaIdx < fluxo.length - 1 && (
+              <Sparkles className="h-4 w-4 text-primary" /> IA de Orçamento
+              {perguntaIdx >= 0 && (
                 <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-normal text-muted-foreground">
-                  {perguntaIdx} de {fluxo.length - 2}
+                  pergunta {perguntaIdx + 1} de {perguntas.length}
                 </span>
               )}
               {isDemo() && (
-                <span className="ml-auto flex items-center gap-1 text-[10px] font-normal text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5">
+                <span className="ml-auto flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-normal text-blue-600">
                   <AlertTriangle className="h-2.5 w-2.5" /> DEMO
                 </span>
               )}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {/* Chat */}
             <div className="max-h-[420px] space-y-2 overflow-y-auto rounded-xl bg-muted/30 p-3">
               {msgs.map((m, i) => (
                 <div key={i} className={m.papel === 'user' ? 'text-right' : 'text-left'}>
                   <div className={cn(
-                    'inline-block max-w-[92%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-line',
-                    m.papel === 'user'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'border bg-card text-foreground font-mono text-xs',
+                    'inline-block max-w-[92%] whitespace-pre-line rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed',
+                    m.papel === 'user' ? 'bg-primary text-primary-foreground' : 'border bg-card text-foreground',
                   )}>
                     {m.texto}
                   </div>
@@ -528,17 +476,16 @@ export function NovoOrcamentoPage() {
               {chatLoading && (
                 <div className="text-left">
                   <span className="inline-flex items-center gap-2 rounded-2xl border bg-card px-3.5 py-2 text-xs text-muted-foreground">
-                    <Loader2 className="h-3 w-3 animate-spin" /> validando evidências…
+                    <Loader2 className="h-3 w-3 animate-spin" /> anotando…
                   </span>
                 </div>
               )}
               <div ref={bottomRef} />
             </div>
 
-            {/* Botões de opção */}
-            {step === 'perguntas' && hasOpcoes && !chatLoading && (
+            {hasOpcoes && !chatLoading && (
               <div className="flex flex-wrap gap-2">
-                {currentFluxo.opcoes!.map((op) => (
+                {atual!.opcoes!.map((op) => (
                   <button
                     key={op}
                     onClick={() => sendMsg(op)}
@@ -550,33 +497,95 @@ export function NovoOrcamentoPage() {
               </div>
             )}
 
-            {/* Campo texto livre */}
-            {step === 'perguntas' && !hasOpcoes && (
+            {!hasOpcoes && !chatLoading && (
               <div className="flex items-center gap-2">
                 <Input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && sendMsg()}
                   placeholder="Ex: São Luís — MA"
-                  disabled={chatLoading}
                   autoFocus
                 />
-                <Button size="icon" onClick={() => sendMsg()} disabled={chatLoading || !input.trim()} aria-label="Enviar">
+                <Button size="icon" onClick={() => sendMsg()} disabled={!input.trim()} aria-label="Enviar">
                   <Send className="h-4 w-4" />
                 </Button>
               </div>
             )}
+          </CardContent>
+        </Card>
+      )}
 
-            {/* Confirmar + gerar (ETAPA 8 → 10: trava de orçamento) */}
-            {step === 'pronto' && (
-              <Button className="w-full" size="lg" onClick={gerarOrcamento} disabled={gerando}>
-                {gerando ? (
-                  <><Loader2 className="h-4 w-4 animate-spin" /> Projeto confirmado — gerando orçamento técnico…</>
-                ) : (
-                  <><ShieldCheck className="h-4 w-4" /> Confirmar projeto e gerar orçamento <ArrowRight className="ml-1 h-4 w-4" /></>
-                )}
-              </Button>
-            )}
+      {/* ── CONFIRMAÇÃO VISUAL DAS MEDIDAS ── */}
+      {step === 'confirmar' && (
+        <Card className="overflow-hidden">
+          <div className="bg-primary/5 px-6 py-5 text-center">
+            <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/15">
+              <ShieldCheck className="h-6 w-6 text-primary" />
+            </div>
+            <h2 className="text-lg font-semibold">Confirme as medidas do projeto</h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              Revise tudo abaixo. Cada dado mostra de onde veio. Nada foi estimado às cegas.
+            </p>
+          </div>
+
+          <CardContent className="space-y-5 pt-5">
+            {/* Geometria */}
+            <div>
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Waves className="h-3.5 w-3.5" /> Piscina
+              </p>
+              <div className="divide-y rounded-xl border px-3">
+                <LinhaMedida Icon={Ruler}      rotulo="Área"         valor="41,40 m²"        origem="evidencia" />
+                <LinhaMedida Icon={ArrowRight} rotulo="Profundidade" valor={profStr}          origem={temCortes ? 'evidencia' : 'voce'} />
+                <LinhaMedida Icon={Calculator} rotulo="Volume"       valor={`${volume} m³`}   origem="calculo" />
+              </div>
+            </div>
+
+            {/* Sistemas */}
+            <div>
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Filter className="h-3.5 w-3.5" /> Sistemas
+              </p>
+              <div className="divide-y rounded-xl border px-3">
+                <LinhaMedida Icon={Filter}    rotulo="Filtragem"   valor="Bomba + filtro + skimmers"        origem="norma" />
+                <LinhaMedida Icon={Lightbulb} rotulo="Iluminação"  valor="LED subaquático"                  origem="norma" />
+                <LinhaMedida Icon={Flame}     rotulo="Aquecimento" valor={respostas.aquecimento ?? '—'}     origem="voce" />
+                <LinhaMedida Icon={Waves}     rotulo="Atrativos"   valor={respostas.atrativos ?? '—'}       origem="voce" />
+              </div>
+            </div>
+
+            {/* Obra */}
+            <div>
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <MapPin className="h-3.5 w-3.5" /> Obra
+              </p>
+              <div className="divide-y rounded-xl border px-3">
+                <LinhaMedida Icon={MapPin} rotulo="Local"  valor={respostas.cidade ?? '—'} origem="voce" />
+                <LinhaMedida Icon={Award}  rotulo="Padrão" valor={respostas.padrao ?? '—'} origem="voce" />
+              </div>
+            </div>
+
+            {/* Legenda + trava */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+              <span className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-emerald-600" /> evidência (planta)</span>
+              <span className="flex items-center gap-1"><UserCheck className="h-3 w-3 text-blue-600" /> você confirmou</span>
+              <span className="flex items-center gap-1"><ShieldCheck className="h-3 w-3 text-violet-600" /> por norma</span>
+              <span className="flex items-center gap-1"><Calculator className="h-3 w-3 text-amber-600" /> calculado</span>
+            </div>
+
+            <Button className="w-full" size="lg" onClick={gerarOrcamento} disabled={gerando}>
+              {gerando ? (
+                <><Loader2 className="h-4 w-4 animate-spin" /> Gerando orçamento técnico…</>
+              ) : (
+                <><CheckCircle2 className="h-4 w-4" /> Confirmar e gerar orçamento <ArrowRight className="ml-1 h-4 w-4" /></>
+              )}
+            </Button>
+            <button
+              onClick={() => { setStep('perguntas'); setPerguntaIdx(0); setMsgs([{ papel: 'assistant', texto: perguntas[0].texto }]); }}
+              className="w-full text-center text-xs text-muted-foreground hover:text-foreground"
+            >
+              ← revisar respostas
+            </button>
           </CardContent>
         </Card>
       )}
