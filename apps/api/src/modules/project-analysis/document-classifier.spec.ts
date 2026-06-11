@@ -48,3 +48,33 @@ describe('DocumentClassifierService (ETAPA 1)', () => {
     expect(r.documentType).toBe('ELETRICO');
   });
 });
+
+/**
+ * Regressão com NOMES REAIS de prancha (nomenclatura técnica BR) — extraídos dos
+ * 18 PDFs de projeto do cliente. O código de disciplina no nome é o sinal dominante:
+ * o conteúdo de uma planta de lazer cita todas as disciplinas e confundia o classificador.
+ */
+describe('DocumentClassifierService — códigos de prancha reais', () => {
+  const svc = new DocumentClassifierService(null as unknown as AiService);
+  // conteúdo de planta de lazer "polui" com termos hidráulicos/elétricos de propósito:
+  const conteudoPoluido = 'skimmer dreno de fundo retorno bomba filtro refletor LED circuito disjuntor tubulação';
+
+  const casos: [string, string][] = [
+    ['017-PIS-LO-0002-004-LAZ-T00-R02.pdf', 'ARQUITETONICO'],   // LAZ → lazer, era Hidráulico
+    ['017-PIS-LO-0003-004-DET-T00-R00.pdf', 'DETALHES_EXECUTIVOS'], // DET, era Hidráulico
+    ['005-EX-PIS-PB-002-LAZ-R03.pdf', 'ARQUITETONICO'],         // PB+LAZ, era Elétrico
+    ['OCE-ARQ-EX-0106-LAZ-T00-R23.pdf', 'ARQUITETONICO'],       // ARQ
+    ['20008-HID-13-RV00-PISCINA.pdf', 'HIDRAULICO'],            // HID
+    ['SUN-HID-EX-09-PIS-T01-R05.pdf', 'HIDRAULICO'],            // HID
+    ['BOC-ARQ-EXE-005-LAZ-R06.pdf', 'ARQUITETONICO'],          // ARQ
+    ['BOC-HID-EXE-12-PIS-R01.pdf', 'HIDRAULICO'],              // HID
+    ['GC_ARQ_LEGAL_09_LAZER_R02.pdf', 'ARQUITETONICO'],       // ARQ (underscore)
+    ['H290-ARQ-EX-PLA-R04-P06-Lazer.pdf', 'ARQUITETONICO'],   // ARQ
+  ];
+
+  it.each(casos)('classifica "%s" → %s mesmo com conteúdo poluído', (nome, esperado) => {
+    const r = svc.heuristica(nome, conteudoPoluido);
+    expect(r.documentType).toBe(esperado);
+    expect(r.confianca).toBeGreaterThanOrEqual(0.8);
+  });
+});
