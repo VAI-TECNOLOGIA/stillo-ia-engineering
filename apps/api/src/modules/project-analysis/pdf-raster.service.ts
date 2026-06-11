@@ -36,6 +36,22 @@ export class PdfRasterService {
     }
   }
 
+  /**
+   * Diagnóstico de capacidade de rasterização (smoke-test). Diferente de
+   * paginasComoImagens, SURFACE o erro real (não engole) — usado pelo endpoint
+   * /diag/raster para confirmar @napi-rs/canvas em produção (Vercel).
+   */
+  async diagnostico(buffer: Buffer): Promise<{ ok: boolean; paginas: number; bytesPrimeira: number; erro?: string }> {
+    try {
+      const { pdfToPng } = await import('pdf-to-png-converter');
+      const pages = await pdfToPng(buffer, { viewportScale: 2.0, pagesToProcess: [1], disableFontFace: true });
+      const comConteudo = pages.filter((p) => p.content);
+      return { ok: comConteudo.length > 0, paginas: comConteudo.length, bytesPrimeira: (comConteudo[0]?.content as Buffer | undefined)?.length ?? 0 };
+    } catch (e) {
+      return { ok: false, paginas: 0, bytesPrimeira: 0, erro: e instanceof Error ? `${e.name}: ${e.message}` : String(e) };
+    }
+  }
+
   /** Heurística: prancha gráfica = pouco texto por página (planta CAD típica). */
   static ehPranchaGrafica(paginas: string[]): boolean {
     if (paginas.length === 0) return true;

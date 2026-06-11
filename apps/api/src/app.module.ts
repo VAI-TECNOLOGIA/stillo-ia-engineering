@@ -15,6 +15,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { ConfigIntegracoesModule } from './modules/config/config.module';
 import { LeituraModule } from './modules/leitura/leitura.module';
 import { ProjectAnalysisModule } from './modules/project-analysis/project-analysis.module';
+import { DiagModule } from './common/health/diag.module';
 import { RegrasModule } from './modules/regras/regras.module';
 import { ProdutosModule } from './modules/produtos/produtos.module';
 import { CatalogosModule } from './modules/catalogos/catalogos.module';
@@ -48,6 +49,8 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     LeituraModule,
     // Motor de leitura v2 — classificação por disciplina + consolidação com evidências
     ProjectAnalysisModule,
+    // Diagnóstico de produção (smoke-test de rasterização/OCR — público)
+    DiagModule,
     // Fase 3 — Regras (editor visual) + Dimensionamento
     RegrasModule,
     // Fase 4 — Produtos, Catálogos & RAG
