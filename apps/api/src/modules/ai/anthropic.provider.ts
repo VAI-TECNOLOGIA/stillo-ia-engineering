@@ -18,7 +18,7 @@ export class AnthropicProvider implements AiProvider {
   private readonly version = '2023-06-01';
 
   async complete(creds: AiCredentials, messages: ChatMessage[], options: CompletionOptions = {}): Promise<CompletionResult> {
-    const model = options.model ?? creds.model ?? 'claude-sonnet-4-5';
+    const model = options.model ?? creds.model ?? 'claude-sonnet-4-6';
 
     // Anthropic separa o system do array de mensagens.
     const system = messages.filter((m) => m.role === 'system').map((m) => this.texto(m.content)).join('\n\n');
