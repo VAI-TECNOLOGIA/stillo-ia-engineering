@@ -109,10 +109,9 @@ function buildPerguntasDemo(docs: DocAnalise[]): Pergunta[] {
   const temCortes = tipos.has('CORTES') || tipos.has('DETALHES_EXECUTIVOS');
 
   const perguntas: Pergunta[] = [];
+  // 1 bolha só: nada que não seja insumo do orçamento.
   const intro = [
-    `Pronto, li ${docs.length === 1 ? 'o documento' : `os ${docs.length} documentos`}! ✅`,
-    `A área da piscina está na planta — registrei com fonte e página.`,
-    `Só preciso confirmar o que não ficou claro pra fechar o orçamento. 👇`,
+    `Li ${docs.length === 1 ? 'o documento' : `os ${docs.length} documentos`}! ✅ Vou confirmar só o que falta pro orçamento:`,
   ];
 
   if (!temCortes) {
@@ -253,11 +252,9 @@ function buildPerguntasReais(analise: ProjectAnalysisV2): Pergunta[] {
     opcoes: ['Econômico', 'Padrão ⭐', 'Premium'],
   });
 
-  // Abertura da conversa entra como bolhas curtas antes da 1ª pergunta
+  // Abertura mínima: 1 bolha — nada que não seja insumo do orçamento.
   const introGeral = [
-    `Pronto! As IAs terminaram de ler ${docs.length === 1 ? 'o documento' : `os ${docs.length} documentos`}. ✅`,
-    `O que ficou claro já está registrado com evidência (fonte + página).`,
-    `Preciso confirmar só o que segue. 👇`,
+    `Leitura concluída! ✅ Vou confirmar só o que falta pro orçamento:`,
   ];
   perguntas[0].intro = [...introGeral, ...(perguntas[0].intro ?? [])];
 
@@ -539,7 +536,7 @@ export function NovoOrcamentoPage() {
       setChatLoading(true);
       await pause(450);
       setChatLoading(false);
-      setMsgs((m) => [...m, { papel: 'assistant', texto: 'Fechado! Registrando suas respostas como evidência e revalidando…' }]);
+      setMsgs((m) => [...m, { papel: 'assistant', texto: 'Registrando…' }]);
       await aplicarRespostasReais(todas);
     }
   }
