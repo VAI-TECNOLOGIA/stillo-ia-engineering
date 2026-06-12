@@ -1,4 +1,4 @@
-import { api } from './api';
+import { api, BASE } from './api';
 import { useAuthStore } from '@/stores/auth.store';
 import { isDemo } from './demo';
 
@@ -89,7 +89,7 @@ export const leituraApi = {
     onProgress?.(0);
     const fd = new FormData();
     fd.append('file', file);
-    const res = await fetch(`/api/v1/obras/${obraId}/arquivos`, {
+    const res = await fetch(`${BASE}/obras/${obraId}/arquivos`, {
       method: 'POST',
       headers: authHeaders,
       body: fd,
@@ -124,7 +124,7 @@ async function uploadDireto(
 ): Promise<ArquivoResumo> {
   // 1. Obter credenciais de upload do backend
   const params = new URLSearchParams({ nome: file.name });
-  const urlRes = await fetch(`/api/v1/obras/${obraId}/arquivos/upload-url?${params}`, {
+  const urlRes = await fetch(`${BASE}/obras/${obraId}/arquivos/upload-url?${params}`, {
     headers: authHeaders,
   });
   if (!urlRes.ok) {
@@ -173,7 +173,7 @@ async function uploadDireto(
   });
 
   // 3. Confirmar no backend (cria registro no banco)
-  const confirmRes = await fetch(`/api/v1/obras/${obraId}/arquivos/confirm`, {
+  const confirmRes = await fetch(`${BASE}/obras/${obraId}/arquivos/confirm`, {
     method: 'POST',
     headers: { ...authHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify({

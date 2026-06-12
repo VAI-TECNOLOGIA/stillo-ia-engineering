@@ -219,15 +219,17 @@ export class ProjectAnalysisProcessor {
                 notificacoes: consenso.notificacoes,
                 campos: consenso.consensos.map((c) => ({
                   campo: c.campo, status: c.status, valor: c.valor, leram: c.leram, concordam: c.concordam,
+                  votos: c.votos.map((v) => ({ provider: v.provider, valor: v.valor })),
                 })),
                 porProvider: consenso.porProvider.map((p) => ({ provider: p.provider, ok: !!p.extracao, erro: p.erro ?? null })),
               },
             }
           : null;
 
-        erro = consenso.notificacoes.length
-          ? `Consenso 3-IA: ${consenso.notificacoes.join(' | ')}`
-          : (extracaoCanonica ? null : 'Nenhuma das IAs conseguiu ler este documento.');
+        // Notificações de consenso NÃO são erro de extração: ficam no rastro
+        // __consenso (e o bloqueio legítimo vem da validação da consolidação —
+        // área não evidenciada, conflito etc). Erro aqui só quando NENHUMA IA leu.
+        erro = extracaoCanonica ? null : 'Nenhuma das IAs conseguiu ler este documento.';
         modeloIa = `consenso: ${consenso.providersUsados.join(' + ')}`;
         this.logger.log(
           `[${doc.arquivo.nomeOriginal}] consenso ${consenso.providersUsados.join('+')} · ` +

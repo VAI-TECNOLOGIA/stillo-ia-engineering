@@ -10,6 +10,11 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { isDemo } from '@/lib/demo';
+import { diagLog, diagErro } from '@/lib/diag';
+import { leituraApi } from '@/lib/leitura.api';
+import {
+  analiseApi, type ProjectAnalysisV2, type CorpoDagua, type CampoResolvivel, type CampoEvid,
+} from '@/lib/analise.api';
 
 /**
  * Fluxo de geração de orçamento — MOTOR DE LEITURA v2.
@@ -17,7 +22,13 @@ import { isDemo } from '@/lib/demo';
  * UX (a pedido): NÃO despeja relatório técnico quando algo não está claro —
  * PERGUNTA ao usuário, item por item. Ao final, mostra uma TELA VISUAL de
  * confirmação de TODAS as medidas (com a origem de cada dado) e só então
- * libera "Gerar orçamento".
+ * libera a confirmação/orçamento.
+ *
+ * DOIS MODOS:
+ *  - DEMO (VITE_DEMO=true): simulação local (vendas) — nada vai pra API.
+ *  - REAL: upload → análise com CONSENSO 3-IA no backend → pendências e
+ *    divergências REAIS viram perguntas → respostas viram evidência
+ *    CONFIRMACAO_HUMANA → confirmação libera o orçamento. Tudo logado (diag).
  */
 
 type Step = 'upload' | 'analise' | 'perguntas' | 'confirmar';
@@ -27,12 +38,12 @@ interface Msg {
   texto: string;
 }
 
-type Campo = 'cidade' | 'profundidade' | 'aquecimento' | 'atrativos' | 'padrao';
-
 interface Pergunta {
-  campo: Campo;
+  campo: string; // 'cidade' | 'aquecimento' | 'atrativos' | 'padrao' | 'profundidade' | 'resolver:<alvo>:<campo>'
   texto: string;
   opcoes?: string[];
+  /** Pergunta real que vira evidência CONFIRMACAO_HUMANA via PATCH /resolver. */
+  resolve?: { alvo: string; campo: CampoResolvivel };
 }
 
 type TipoDoc =
@@ -43,8 +54,9 @@ type TipoDoc =
 interface DocAnalise {
   nome: string;
   tipo: TipoDoc | null;
-  fase: 'fila' | 'classificando' | 'extraindo' | 'ok';
+  fase: 'fila' | 'classificando' | 'extraindo' | 'ok' | 'falha';
   dados: number;
+  modeloIa?: string | null;
 }
 
 const TIPO_META: Record<TipoDoc, { label: string; cor: string }> = {
@@ -61,6 +73,11 @@ const TIPO_META: Record<TipoDoc, { label: string; cor: string }> = {
   PAISAGISMO:          { label: 'Paisagismo',           cor: 'bg-green-100 text-green-700' },
   LAZER:               { label: 'Lazer',                cor: 'bg-pink-100 text-pink-700' },
 };
+
+function tipoMeta(tipo: string | null): { label: string; cor: string } {
+  if (tipo && tipo in TIPO_META) return TIPO_META[tipo as TipoDoc];
+  return { label: tipo ?? 'Documento', cor: 'bg-muted text-muted-foreground' };
+}
 
 /** Classificação por nome do arquivo — mesma heurística do backend (ETAPA 1). */
 function classificarPorNome(nome: string): TipoDoc {
@@ -82,10 +99,10 @@ function classificarPorNome(nome: string): TipoDoc {
 const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * Monta APENAS as perguntas das pendências (o que o PDF não deixou claro).
+ * DEMO — monta APENAS as perguntas das pendências (o que o PDF não deixou claro).
  * Sem relatório-dump: o motor pergunta direto, item por item.
  */
-function buildPerguntas(docs: DocAnalise[]): Pergunta[] {
+function buildPerguntasDemo(docs: DocAnalise[]): Pergunta[] {
   const tipos = new Set(docs.map((d) => d.tipo));
   const temCortes = tipos.has('CORTES') || tipos.has('DETALHES_EXECUTIVOS');
   const temHidraulico = tipos.has('HIDRAULICO') || tipos.has('CASA_DE_MAQUINAS') || tipos.has('EQUIPAMENTOS');
@@ -133,10 +150,121 @@ function buildPerguntas(docs: DocAnalise[]): Pergunta[] {
   return perguntas;
 }
 
-/** Extrai o primeiro número (m) de uma resposta tipo "1,50 m" → 1.5. */
-function parseProf(s: string): number {
-  const m = s.match(/(\d+[.,]\d+)/);
-  return m ? parseFloat(m[1].replace(',', '.')) : 1.4;
+/**
+ * REAL — perguntas derivadas do que o BACKEND devolveu:
+ *  - divergência entre IAs (consenso) → pergunta o valor correto;
+ *  - profundidade sem corte (validação) → pergunta a profundidade;
+ *  - cidade/aquecimento/atrativos/padrão → personalização do orçamento.
+ */
+function buildPerguntasReais(analise: ProjectAnalysisV2): Pergunta[] {
+  const perguntas: Pergunta[] = [];
+  const docs = analise.analises ?? [];
+  const nomeArq = docs[0]?.arquivo?.nomeOriginal ?? 'documento';
+
+  perguntas.push({
+    campo: 'cidade',
+    texto:
+      `Análise concluída — ${docs.length === 1 ? `o documento (${nomeArq}) foi lido` : `os ${docs.length} documentos foram lidos`} ` +
+      `pelas IAs de forma independente. O que ficou claro está registrado com evidência; ` +
+      `o que não ficou, vou confirmar com você agora.\n\n` +
+      `Primeiro: qual a cidade e o estado da obra?`,
+  });
+
+  // Divergências do consenso → o humano decide (vira evidência CONFIRMACAO_HUMANA)
+  const vistos = new Set<string>();
+  for (const doc of docs) {
+    const cons = doc.extracao?.__consenso;
+    if (!cons) continue;
+    for (const c of cons.campos ?? []) {
+      if (c.status !== 'DIVERGENTE' || vistos.has(c.campo)) continue;
+      vistos.add(c.campo);
+      const [alvoBruto, campoBruto] = c.campo.split('.');
+      const alvo = alvoBruto.replace(/_/g, ' ');
+      const campo = (campoBruto ?? 'areaM2') as CampoResolvivel;
+      const notif = cons.notificacoes?.find((n) => n.toLowerCase().includes(alvo.toLowerCase()));
+      perguntas.push({
+        campo: `resolver:${alvo}:${campo}`,
+        resolve: { alvo, campo },
+        texto:
+          (notif ?? `As IAs divergiram sobre "${alvo}" (${campo}).`) +
+          `\n\nQual é o valor correto${campo === 'areaM2' ? ' (em m²)' : ' (em metros)'}? Confira na planta e digite o número.`,
+      });
+    }
+  }
+
+  // Leituras de uma única IA (sem corroboração) → vira SUGESTÃO clicável na pergunta.
+  // Nomes podem variar entre consenso e consolidação ("PRAINHA" vs "PRAINHA / PISCINA
+  // ORGÂNICA") → matching tolerante por inclusão.
+  const leiturasUnicasArea: { alvo: string; valor: number }[] = [];
+  for (const doc of docs) {
+    for (const c of doc.extracao?.__consenso?.campos ?? []) {
+      if (c.status !== 'LIDO_POR_UMA' || !c.campo.endsWith('.areaM2')) continue;
+      const v = c.votos?.find((x) => x.valor != null)?.valor ?? c.valor;
+      if (v != null) leiturasUnicasArea.push({ alvo: c.campo.replace('.areaM2', '').replace(/_/g, ' ').toUpperCase(), valor: v });
+    }
+  }
+  const sugestaoArea = (alvo: string): number | undefined => {
+    const a = alvo.toUpperCase();
+    return leiturasUnicasArea.find((l) => a.includes(l.alvo) || l.alvo.includes(a))?.valor;
+  };
+
+  // Pendências da validação — cada uma vira pergunta resolvível (nunca beco sem saída)
+  for (const p of analise.validacao?.pendencias ?? []) {
+    if (p.codigo === 'PROFUNDIDADE_SEM_CORTE') {
+      perguntas.push({
+        campo: `resolver:${p.alvo}:profundidadeMaxM`,
+        resolve: { alvo: p.alvo, campo: 'profundidadeMaxM' },
+        texto: `A PROFUNDIDADE de "${p.alvo}" não está evidenciada (faltou a prancha de cortes). O motor não inventa — qual é?`,
+        opcoes: ['1,20 m (recreação)', '1,40 m (padrão residencial)', '1,50 m', '1,20 a 1,60 m (fundo inclinado)'],
+      });
+    } else if (p.codigo === 'PISCINA_SEM_AREA') {
+      const sugestao = sugestaoArea(p.alvo);
+      perguntas.push({
+        campo: `resolver:${p.alvo}:areaM2`,
+        resolve: { alvo: p.alvo, campo: 'areaM2' },
+        texto:
+          `A ÁREA de "${p.alvo}" não ficou evidenciada com segurança.` +
+          (sugestao != null
+            ? ` Uma das IAs leu ${String(sugestao).replace('.', ',')} m², mas sem confirmação das demais — confira na planta.`
+            : ' Confira na planta.') +
+          `\n\nQual é a área correta, em m²?`,
+        ...(sugestao != null ? { opcoes: [`${String(sugestao).replace('.', ',')} m² (leitura da IA)`] } : {}),
+      });
+    }
+  }
+
+  // Conflitos entre documentos (consolidação) → o humano decide o valor
+  for (const cf of analise.consolidacao?.conflitos ?? []) {
+    const campo = cf.campo as CampoResolvivel;
+    perguntas.push({
+      campo: `resolver:${cf.alvo}:${campo}`,
+      resolve: { alvo: cf.alvo, campo },
+      texto: `Os documentos CONFLITAM sobre ${campo} de "${cf.alvo}". Qual é o valor correto?`,
+    });
+  }
+
+  perguntas.push({
+    campo: 'aquecimento',
+    texto: `AQUECIMENTO não foi evidenciado. Como deseja?`,
+    opcoes: ['Trocador de calor a gás', 'Bomba de calor elétrica', 'Sem aquecimento'],
+  });
+  perguntas.push({
+    campo: 'atrativos',
+    texto: `ATRATIVOS (cascata, hidromassagem, prainha) — deseja incluir algum?`,
+    opcoes: ['Cascata (lâmina d\'água)', 'Cascata + hidromassagem', 'Prainha de entrada', 'Nenhum atrativo'],
+  });
+  perguntas.push({
+    campo: 'padrao',
+    texto: `Por fim — o padrão dos equipamentos:`,
+    opcoes: ['Econômico', 'Padrão ⭐', 'Premium'],
+  });
+
+  return perguntas;
+}
+
+/** Extrai números (m / m²) de uma resposta: "1,50 m" → [1.5]; "1,20 a 1,60" → [1.2, 1.6]. */
+function parseNumeros(s: string): number[] {
+  return [...s.matchAll(/(\d+(?:[.,]\d+)?)/g)].map((m) => parseFloat(m[1].replace(',', '.')));
 }
 
 const STEP_LABELS = ['Arquivos', 'Leitura', 'Perguntas', 'Confirmação', 'Orçamento'];
@@ -156,16 +284,17 @@ function formatBytes(bytes: number): string {
 }
 
 // ── Badge de origem do dado (a transparência que vale ouro) ──────────────────
-type Origem = 'evidencia' | 'voce' | 'norma' | 'calculo';
+type Origem = 'evidencia' | 'voce' | 'norma' | 'calculo' | 'pendente';
 const ORIGEM_META: Record<Origem, { label: string; cls: string; Icon: React.ComponentType<{ className?: string }> }> = {
   evidencia: { label: 'Evidenciado na planta', cls: 'bg-emerald-100 text-emerald-700', Icon: CheckCircle2 },
   voce:      { label: 'Você confirmou',        cls: 'bg-blue-100 text-blue-700',       Icon: UserCheck },
   norma:     { label: 'Por norma (NBR)',       cls: 'bg-violet-100 text-violet-700',   Icon: ShieldCheck },
   calculo:   { label: 'Calculado',             cls: 'bg-amber-100 text-amber-700',     Icon: Calculator },
+  pendente:  { label: 'Não evidenciado',       cls: 'bg-stone-200 text-stone-600',     Icon: AlertTriangle },
 };
 
-function LinhaMedida({ Icon, rotulo, valor, origem }: {
-  Icon: React.ComponentType<{ className?: string }>; rotulo: string; valor: string; origem: Origem;
+function LinhaMedida({ Icon, rotulo, valor, origem, detalhe }: {
+  Icon: React.ComponentType<{ className?: string }>; rotulo: string; valor: string; origem: Origem; detalhe?: string;
 }) {
   const o = ORIGEM_META[origem];
   return (
@@ -176,12 +305,26 @@ function LinhaMedida({ Icon, rotulo, valor, origem }: {
       <div className="min-w-0 flex-1">
         <p className="text-xs text-muted-foreground">{rotulo}</p>
         <p className="font-semibold leading-tight">{valor}</p>
+        {detalhe && <p className="truncate text-[11px] text-muted-foreground">{detalhe}</p>}
       </div>
       <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', o.cls)}>
         <o.Icon className="h-3 w-3" /> {o.label}
       </span>
     </div>
   );
+}
+
+/** Origem de um campo consolidado real: evidência da planta ou decisão humana. */
+function origemDoCampo(campo: CampoEvid | undefined): { origem: Origem; detalhe?: string } {
+  if (!campo || campo.valor === null) return { origem: 'pendente' };
+  const ultima = campo.fontes[campo.fontes.length - 1];
+  if (ultima?.documento === 'CONFIRMACAO_HUMANA') return { origem: 'voce' };
+  return { origem: 'evidencia', detalhe: ultima ? `${ultima.fonte} — ${ultima.documento}${ultima.pagina ? ` (pág. ${ultima.pagina})` : ''}` : undefined };
+}
+
+function fmtM(v: number | null | undefined, unidade: string): string {
+  if (v === null || v === undefined) return '—';
+  return `${String(v).replace('.', ',')} ${unidade}`;
 }
 
 export function NovoOrcamentoPage() {
@@ -196,10 +339,18 @@ export function NovoOrcamentoPage() {
   const [input, setInput] = useState('');
   const [perguntas, setPerguntas] = useState<Pergunta[]>([]);
   const [perguntaIdx, setPerguntaIdx] = useState(0);
-  const [respostas, setRespostas] = useState<Partial<Record<Campo, string>>>({});
+  const [respostas, setRespostas] = useState<Record<string, string>>({});
   const [chatLoading, setChatLoading] = useState(false);
   const [gerando, setGerando] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+
+  // modo REAL
+  const [obraId, setObraId] = useState<string | null>(null);
+  const [analise, setAnalise] = useState<ProjectAnalysisV2 | null>(null);
+  const [faseMsg, setFaseMsg] = useState('');
+  const [erro, setErro] = useState<string | null>(null);
+  const [pendenciasErro, setPendenciasErro] = useState<string[]>([]);
+  const [confirmado, setConfirmado] = useState(false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -216,10 +367,9 @@ export function NovoOrcamentoPage() {
     setFiles((prev) => prev.filter((f) => f.name !== name));
   }
 
-  // ─── Pipeline ────────────────────────────────────────────────────────────────
+  // ─── Pipeline DEMO (simulação local — usada na demo de vendas) ───────────────
 
-  async function iniciarAnalise() {
-    if (files.length === 0) return;
+  async function iniciarAnaliseDemo() {
     const iniciais: DocAnalise[] = files.map((f) => ({ nome: f.name, tipo: null, fase: 'fila', dados: 0 }));
     setDocs(iniciais);
     setStep('analise');
@@ -240,7 +390,7 @@ export function NovoOrcamentoPage() {
     }
 
     await pause(700);
-    const qs = buildPerguntas(atualizados);
+    const qs = buildPerguntasDemo(atualizados);
     setPerguntas(qs);
     setRespostas({});
     setPerguntaIdx(0);
@@ -248,33 +398,163 @@ export function NovoOrcamentoPage() {
     setStep('perguntas');
   }
 
+  // ─── Pipeline REAL (upload → consenso 3-IA → perguntas reais) ────────────────
+
+  async function iniciarAnaliseReal() {
+    setErro(null);
+    setPendenciasErro([]);
+    const iniciais: DocAnalise[] = files.map((f) => ({ nome: f.name, tipo: null, fase: 'fila', dados: 0 }));
+    setDocs(iniciais);
+    setStep('analise');
+
+    try {
+      // 1. Obra-recipiente (cliente "Orçamentos Rápidos" + obra com data)
+      setFaseMsg('Preparando a obra…');
+      diagLog('análise real: iniciando', { arquivos: files.map((f) => ({ nome: f.name, bytes: f.size })) });
+      const cliente = await analiseApi.garantirClienteRapido();
+      const nomeObra = `Novo Orçamento ${new Date().toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} — ${files[0].name.slice(0, 40)}`;
+      const obra = await analiseApi.criarObraRapida(cliente.id, nomeObra);
+      setObraId(obra.id);
+      diagLog('obra criada', { obraId: obra.id, nome: nomeObra });
+
+      // 2. Upload de cada arquivo (≤4MB via função; >4MB direto ao storage)
+      const atualizados = [...iniciais];
+      for (let i = 0; i < files.length; i++) {
+        atualizados[i] = { ...atualizados[i], fase: 'classificando' };
+        setDocs([...atualizados]);
+        setFaseMsg(`Enviando ${files[i].name}…`);
+        const arq = await leituraApi.upload(obra.id, files[i]);
+        diagLog('upload ok', { arquivoId: arq.id, nome: arq.nomeOriginal });
+        atualizados[i] = { ...atualizados[i], fase: 'extraindo' };
+        setDocs([...atualizados]);
+      }
+
+      // 3. Análise síncrona com consenso 3-IA (a parte demorada)
+      setFaseMsg(`As 3 IAs (GPT-4o + Claude + Gemini) estão lendo ${files.length === 1 ? 'o documento' : 'os documentos'} de forma independente — ~1 a 3 min por documento. Não feche a página.`);
+      const t0 = performance.now();
+      const resultado = await analiseApi.disparar(obra.id);
+      diagLog('análise concluída', { analiseId: resultado.id, status: resultado.status, segundos: Math.round((performance.now() - t0) / 1000) });
+      setAnalise(resultado);
+
+      // 4. Docs reais (disciplina + modelo que leu)
+      setDocs(resultado.analises.map((a) => ({
+        nome: a.arquivo.nomeOriginal,
+        tipo: (a.documentType in TIPO_META ? a.documentType : null) as TipoDoc | null,
+        fase: a.status === 'EXTRAIDO' ? 'ok' : 'falha',
+        dados: Object.keys(a.extracao ?? {}).filter((k) => k !== '__consenso').length,
+        modeloIa: a.modeloIa,
+      })));
+
+      // 5. Perguntas vindas das pendências/divergências REAIS
+      const qs = buildPerguntasReais(resultado);
+      setPerguntas(qs);
+      setRespostas({});
+      setPerguntaIdx(0);
+      setMsgs([{ papel: 'assistant', texto: qs[0].texto }]);
+      setStep('perguntas');
+    } catch (e) {
+      const msg = diagErro('análise real', e);
+      setErro(`A análise falhou: ${msg}`);
+      setStep('upload');
+    }
+  }
+
+  /** Aplica as respostas no backend: resolver pendências + dados da obra. */
+  async function aplicarRespostasReais(todas: Record<string, string>) {
+    if (!analise || !obraId) return;
+    setChatLoading(true);
+    try {
+      // pendências/divergências → evidência CONFIRMACAO_HUMANA
+      for (const q of perguntas) {
+        if (!q.resolve) continue;
+        const resposta = todas[q.campo];
+        if (!resposta) continue;
+        const nums = parseNumeros(resposta);
+        if (nums.length === 0) continue;
+        if (q.resolve.campo === 'profundidadeMaxM') {
+          const min = nums.length > 1 ? Math.min(...nums) : nums[0];
+          const max = Math.max(...nums);
+          await analiseApi.resolver(analise.id, { alvo: q.resolve.alvo, campo: 'profundidadeMinM', valor: min, justificativa: resposta });
+          await analiseApi.resolver(analise.id, { alvo: q.resolve.alvo, campo: 'profundidadeMaxM', valor: max, justificativa: resposta });
+          diagLog('pendência resolvida', { alvo: q.resolve.alvo, campo: 'profundidade', min, max });
+        } else {
+          await analiseApi.resolver(analise.id, { alvo: q.resolve.alvo, campo: q.resolve.campo, valor: nums[0], justificativa: resposta });
+          diagLog('divergência resolvida', { alvo: q.resolve.alvo, campo: q.resolve.campo, valor: nums[0] });
+        }
+      }
+
+      // cidade/uf + preferências do orçamento → obra
+      const cidadeUf = todas['cidade'] ?? '';
+      const ufMatch = cidadeUf.match(/\b([A-Za-z]{2})\s*$/);
+      await analiseApi.atualizarObra(obraId, {
+        cidade: cidadeUf.replace(/[-–—,]?\s*[A-Za-z]{2}\s*$/, '').trim() || cidadeUf,
+        ...(ufMatch ? { uf: ufMatch[1].toUpperCase() } : {}),
+        observacoes: `Preferências do orçamento (Novo Orçamento com IA): aquecimento=${todas['aquecimento'] ?? '-'} · atrativos=${todas['atrativos'] ?? '-'} · padrão=${todas['padrao'] ?? '-'}`,
+      });
+      diagLog('obra atualizada', { cidade: cidadeUf });
+
+      // estado final pós-resoluções
+      const atualizada = await analiseApi.obter(obraId);
+      if (atualizada) setAnalise(atualizada);
+      diagLog('análise revalidada', { status: atualizada?.status, pendencias: atualizada?.validacao?.pendencias?.length ?? 0 });
+      setStep('confirmar');
+    } catch (e) {
+      const msg = diagErro('aplicar respostas', e);
+      setErro(`Não consegui registrar as respostas: ${msg}`);
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
   async function sendMsg(resposta?: string) {
     const texto = (resposta ?? input).trim();
     if (!texto || chatLoading) return;
     setInput('');
     setMsgs((m) => [...m, { papel: 'user', texto }]);
-    // guarda a resposta no campo da pergunta atual
     const campo = perguntas[perguntaIdx]?.campo;
-    if (campo) setRespostas((r) => ({ ...r, [campo]: texto }));
+    const todas = campo ? { ...respostas, [campo]: texto } : respostas;
+    if (campo) setRespostas(todas);
 
     setChatLoading(true);
-    await pause(650);
+    await pause(500);
     setChatLoading(false);
 
     const next = perguntaIdx + 1;
     if (next < perguntas.length) {
       setPerguntaIdx(next);
       setMsgs((m) => [...m, { papel: 'assistant', texto: perguntas[next].texto }]);
-    } else {
-      // acabaram as perguntas → tela visual de confirmação
+    } else if (isDemo()) {
       setStep('confirmar');
+    } else {
+      setMsgs((m) => [...m, { papel: 'assistant', texto: 'Perfeito — registrando suas respostas como evidência (CONFIRMACAO_HUMANA) e revalidando o projeto…' }]);
+      await aplicarRespostasReais(todas);
     }
   }
 
   async function gerarOrcamento() {
+    if (isDemo()) {
+      setGerando(true);
+      await pause(1600);
+      navigate('/orcamentos/orc1042', { state: { geradoAgora: true } });
+      return;
+    }
+    if (!analise) return;
     setGerando(true);
-    await pause(1600);
-    navigate('/orcamentos/orc1042', { state: { geradoAgora: true } });
+    setErro(null);
+    setPendenciasErro([]);
+    try {
+      const confirmada = await analiseApi.confirmar(analise.id);
+      diagLog('análise CONFIRMADA', { analiseId: confirmada.id, status: confirmada.status });
+      setAnalise(confirmada);
+      setConfirmado(true);
+    } catch (e) {
+      const body = (e as { body?: { motivo?: string; pendencias?: string[] } }).body;
+      diagErro('confirmar análise', e);
+      setErro(body?.motivo ?? 'Não foi possível confirmar — existem pendências.');
+      setPendenciasErro(body?.pendencias ?? []);
+    } finally {
+      setGerando(false);
+    }
   }
 
   function onDrop(e: React.DragEvent) {
@@ -289,11 +569,16 @@ export function NovoOrcamentoPage() {
   const atual = perguntas[perguntaIdx];
   const hasOpcoes = step === 'perguntas' && !!atual?.opcoes;
 
-  // dados derivados p/ a tela de confirmação
+  // dados derivados p/ a tela de confirmação DEMO
   const temCortes = docs.some((d) => d.tipo === 'CORTES' || d.tipo === 'DETALHES_EXECUTIVOS');
-  const profStr = temCortes ? '1,50 m' : (respostas.profundidade ?? '—');
-  const prof = parseProf(profStr);
-  const volume = (41.4 * prof).toFixed(1).replace('.', ',');
+  const profStr = temCortes ? '1,50 m' : (respostas['profundidade'] ?? '—');
+  const profNums = parseNumeros(profStr);
+  const volume = (41.4 * (profNums[0] ?? 1.4)).toFixed(1).replace('.', ',');
+
+  // avisos de leitura única (consenso) p/ a tela real
+  const avisosLeituraUnica = (analise?.analises ?? [])
+    .flatMap((a) => a.extracao?.__consenso?.campos ?? [])
+    .filter((c) => c.status === 'LIDO_POR_UMA');
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -326,6 +611,21 @@ export function NovoOrcamentoPage() {
           );
         })}
       </div>
+
+      {/* Erro global (modo real) — visível e copiável */}
+      {erro && (
+        <div className="space-y-1 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+          <p className="flex items-center gap-2 font-medium text-destructive">
+            <AlertTriangle className="h-4 w-4 shrink-0" /> {erro}
+          </p>
+          {pendenciasErro.map((p, i) => (
+            <p key={i} className="pl-6 text-xs text-muted-foreground">· {p}</p>
+          ))}
+          <p className="pl-6 text-[11px] text-muted-foreground">
+            Detalhes técnicos no console do navegador (F12) — eventos em <code>window.__stilloDiag</code>.
+          </p>
+        </div>
+      )}
 
       {/* ── UPLOAD ── */}
       {step === 'upload' && (
@@ -386,9 +686,14 @@ export function NovoOrcamentoPage() {
                 <p className="text-xs text-muted-foreground">
                   💡 Quanto mais disciplinas (cortes, hidráulico, memorial), menos perguntas a IA faz.
                 </p>
-                <Button className="w-full" size="lg" onClick={iniciarAnalise}>
+                <Button className="w-full" size="lg" onClick={() => (isDemo() ? iniciarAnaliseDemo() : iniciarAnaliseReal())}>
                   <Sparkles className="h-4 w-4" /> Analisar com IA <ArrowRight className="ml-1 h-4 w-4" />
                 </Button>
+                {!isDemo() && (
+                  <p className="text-center text-[11px] text-muted-foreground">
+                    Leitura real com consenso entre 3 IAs (GPT-4o + Claude + Gemini) — ~1 a 3 min por documento.
+                  </p>
+                )}
               </div>
             )}
           </CardContent>
@@ -411,33 +716,43 @@ export function NovoOrcamentoPage() {
                   <div className="flex items-center gap-2">
                     <p className="truncate text-sm font-medium">{d.nome}</p>
                     {d.tipo && (
-                      <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', TIPO_META[d.tipo].cor)}>
-                        {TIPO_META[d.tipo].label}
+                      <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', tipoMeta(d.tipo).cor)}>
+                        {tipoMeta(d.tipo).label}
                       </span>
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground">
                     {d.fase === 'fila' && 'Aguardando…'}
-                    {d.fase === 'classificando' && 'Classificando disciplina (nome + carimbo + conteúdo)…'}
-                    {d.fase === 'extraindo' && `Extraindo dados de ${TIPO_META[d.tipo!].label} — somente desta disciplina…`}
+                    {d.fase === 'classificando' && (isDemo() ? 'Classificando disciplina (nome + carimbo + conteúdo)…' : 'Enviando arquivo…')}
+                    {d.fase === 'extraindo' && (isDemo() ? `Extraindo dados de ${tipoMeta(d.tipo).label} — somente desta disciplina…` : 'Na fila de leitura das IAs…')}
                     {d.fase === 'ok' && `✓ ${d.dados} dados extraídos com evidência (fonte + página)`}
+                    {d.fase === 'falha' && '✗ falha na leitura — veja o erro acima'}
                   </p>
                 </div>
                 {(d.fase === 'classificando' || d.fase === 'extraindo')
                   ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
                   : d.fase === 'ok'
                   ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  : d.fase === 'falha'
+                  ? <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" />
                   : <div className="h-4 w-4 rounded-full border-2 border-muted" />
                 }
               </div>
             ))}
-            {docs.every((d) => d.fase === 'ok') && (
+            {!isDemo() && faseMsg && (
+              <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" /> {faseMsg}
+              </div>
+            )}
+            {isDemo() && docs.every((d) => d.fase === 'ok') && (
               <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">
                 <Layers className="h-4 w-4 shrink-0" /> Consolidando — e separando o que precisa confirmar com você…
               </div>
             )}
             <p className="text-center text-xs text-muted-foreground">
-              Motor v2 · GPT-4o Vision lê as pranchas como imagem · zero inferência
+              {isDemo()
+                ? 'Motor v2 · GPT-4o Vision lê as pranchas como imagem · zero inferência'
+                : 'Motor v2 · consenso GPT-4o + Claude + Gemini · divergência vira pergunta, nunca chute'}
             </p>
           </CardContent>
         </Card>
@@ -503,7 +818,7 @@ export function NovoOrcamentoPage() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && sendMsg()}
-                  placeholder="Ex: São Luís — MA"
+                  placeholder={atual?.resolve ? 'Ex: 48,8' : 'Ex: São Luís — MA'}
                   autoFocus
                 />
                 <Button size="icon" onClick={() => sendMsg()} disabled={!input.trim()} aria-label="Enviar">
@@ -522,24 +837,70 @@ export function NovoOrcamentoPage() {
             <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary/15">
               <ShieldCheck className="h-6 w-6 text-primary" />
             </div>
-            <h2 className="text-lg font-semibold">Confirme as medidas do projeto</h2>
+            <h2 className="text-lg font-semibold">
+              {confirmado ? 'Medidas confirmadas!' : 'Confirme as medidas do projeto'}
+            </h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Revise tudo abaixo. Cada dado mostra de onde veio. Nada foi estimado às cegas.
+              {confirmado
+                ? 'A análise foi confirmada e a obra está liberada para dimensionamento e orçamento.'
+                : 'Revise tudo abaixo. Cada dado mostra de onde veio. Nada foi estimado às cegas.'}
             </p>
           </div>
 
           <CardContent className="space-y-5 pt-5">
-            {/* Geometria */}
-            <div>
-              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <Waves className="h-3.5 w-3.5" /> Piscina
-              </p>
-              <div className="divide-y rounded-xl border px-3">
-                <LinhaMedida Icon={Ruler}      rotulo="Área"         valor="41,40 m²"        origem="evidencia" />
-                <LinhaMedida Icon={ArrowRight} rotulo="Profundidade" valor={profStr}          origem={temCortes ? 'evidencia' : 'voce'} />
-                <LinhaMedida Icon={Calculator} rotulo="Volume"       valor={`${volume} m³`}   origem="calculo" />
-              </div>
-            </div>
+            {isDemo() ? (
+              <>
+                {/* Geometria (DEMO) */}
+                <div>
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <Waves className="h-3.5 w-3.5" /> Piscina
+                  </p>
+                  <div className="divide-y rounded-xl border px-3">
+                    <LinhaMedida Icon={Ruler}      rotulo="Área"         valor="41,40 m²"        origem="evidencia" />
+                    <LinhaMedida Icon={ArrowRight} rotulo="Profundidade" valor={profStr}          origem={temCortes ? 'evidencia' : 'voce'} />
+                    <LinhaMedida Icon={Calculator} rotulo="Volume"       valor={`${volume} m³`}   origem="calculo" />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Geometria REAL — cada corpo d'água consolidado, com origem por evidência */}
+                {(analise?.consolidacao?.corposDagua ?? []).map((corpo: CorpoDagua) => {
+                  const oArea = origemDoCampo(corpo.areaM2);
+                  const oProfMax = origemDoCampo(corpo.profundidadeMaxM);
+                  const profMin = corpo.profundidadeMinM?.valor;
+                  const profMax = corpo.profundidadeMaxM?.valor;
+                  const profTxt = profMax == null ? '—'
+                    : profMin != null && profMin !== profMax
+                    ? `${fmtM(profMin, '')}a ${fmtM(profMax, 'm')}`
+                    : fmtM(profMax, 'm');
+                  return (
+                    <div key={corpo.nome}>
+                      <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <Waves className="h-3.5 w-3.5" /> {corpo.nome}
+                      </p>
+                      <div className="divide-y rounded-xl border px-3">
+                        <LinhaMedida Icon={Ruler} rotulo="Área" valor={fmtM(corpo.areaM2?.valor, 'm²')} origem={oArea.origem} detalhe={oArea.detalhe} />
+                        <LinhaMedida Icon={ArrowRight} rotulo="Profundidade" valor={profTxt} origem={oProfMax.origem} detalhe={oProfMax.detalhe} />
+                        {corpo.volumeM3?.valor != null && (
+                          <LinhaMedida Icon={Calculator} rotulo="Volume" valor={fmtM(corpo.volumeM3.valor, 'm³')} origem={origemDoCampo(corpo.volumeM3).origem} />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {avisosLeituraUnica.length > 0 && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                    <p className="font-medium">Leituras com uma única IA (sem corroboração):</p>
+                    {avisosLeituraUnica.map((c) => (
+                      <p key={c.campo}>· {c.campo.replace(/_/g, ' ').replace('.areaM2', ' — área')} {c.valor != null ? `(${String(c.valor).replace('.', ',')})` : ''}</p>
+                    ))}
+                    <p className="mt-1">Esses valores NÃO entram no orçamento sem confirmação — revise na planta se forem relevantes.</p>
+                  </div>
+                )}
+              </>
+            )}
 
             {/* Sistemas */}
             <div>
@@ -549,8 +910,8 @@ export function NovoOrcamentoPage() {
               <div className="divide-y rounded-xl border px-3">
                 <LinhaMedida Icon={Filter}    rotulo="Filtragem"   valor="Bomba + filtro + skimmers"        origem="norma" />
                 <LinhaMedida Icon={Lightbulb} rotulo="Iluminação"  valor="LED subaquático"                  origem="norma" />
-                <LinhaMedida Icon={Flame}     rotulo="Aquecimento" valor={respostas.aquecimento ?? '—'}     origem="voce" />
-                <LinhaMedida Icon={Waves}     rotulo="Atrativos"   valor={respostas.atrativos ?? '—'}       origem="voce" />
+                <LinhaMedida Icon={Flame}     rotulo="Aquecimento" valor={respostas['aquecimento'] ?? '—'}  origem="voce" />
+                <LinhaMedida Icon={Waves}     rotulo="Atrativos"   valor={respostas['atrativos'] ?? '—'}    origem="voce" />
               </div>
             </div>
 
@@ -560,12 +921,12 @@ export function NovoOrcamentoPage() {
                 <MapPin className="h-3.5 w-3.5" /> Obra
               </p>
               <div className="divide-y rounded-xl border px-3">
-                <LinhaMedida Icon={MapPin} rotulo="Local"  valor={respostas.cidade ?? '—'} origem="voce" />
-                <LinhaMedida Icon={Award}  rotulo="Padrão" valor={respostas.padrao ?? '—'} origem="voce" />
+                <LinhaMedida Icon={MapPin} rotulo="Local"  valor={respostas['cidade'] ?? '—'} origem="voce" />
+                <LinhaMedida Icon={Award}  rotulo="Padrão" valor={respostas['padrao'] ?? '—'} origem="voce" />
               </div>
             </div>
 
-            {/* Legenda + trava */}
+            {/* Legenda */}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
               <span className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-emerald-600" /> evidência (planta)</span>
               <span className="flex items-center gap-1"><UserCheck className="h-3 w-3 text-blue-600" /> você confirmou</span>
@@ -573,19 +934,27 @@ export function NovoOrcamentoPage() {
               <span className="flex items-center gap-1"><Calculator className="h-3 w-3 text-amber-600" /> calculado</span>
             </div>
 
-            <Button className="w-full" size="lg" onClick={gerarOrcamento} disabled={gerando}>
-              {gerando ? (
-                <><Loader2 className="h-4 w-4 animate-spin" /> Gerando orçamento técnico…</>
-              ) : (
-                <><CheckCircle2 className="h-4 w-4" /> Confirmar e gerar orçamento <ArrowRight className="ml-1 h-4 w-4" /></>
-              )}
-            </Button>
-            <button
-              onClick={() => { setStep('perguntas'); setPerguntaIdx(0); setMsgs([{ papel: 'assistant', texto: perguntas[0].texto }]); }}
-              className="w-full text-center text-xs text-muted-foreground hover:text-foreground"
-            >
-              ← revisar respostas
-            </button>
+            {confirmado ? (
+              <Button className="w-full" size="lg" onClick={() => navigate(`/obras/${obraId}/dimensionamento`)}>
+                <CheckCircle2 className="h-4 w-4" /> Ir para o Dimensionamento <ArrowRight className="ml-1 h-4 w-4" />
+              </Button>
+            ) : (
+              <Button className="w-full" size="lg" onClick={gerarOrcamento} disabled={gerando}>
+                {gerando ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" /> {isDemo() ? 'Gerando orçamento técnico…' : 'Confirmando medidas…'}</>
+                ) : (
+                  <><CheckCircle2 className="h-4 w-4" /> {isDemo() ? 'Confirmar e gerar orçamento' : 'Confirmar medidas e liberar orçamento'} <ArrowRight className="ml-1 h-4 w-4" /></>
+                )}
+              </Button>
+            )}
+            {!confirmado && (
+              <button
+                onClick={() => { setStep('perguntas'); setPerguntaIdx(0); setMsgs([{ papel: 'assistant', texto: perguntas[0].texto }]); }}
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground"
+              >
+                ← revisar respostas
+              </button>
+            )}
           </CardContent>
         </Card>
       )}

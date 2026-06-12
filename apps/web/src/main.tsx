@@ -4,7 +4,11 @@ import { RouterProvider } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from '@/app/router';
 import { isDemo, seedDemoAuth } from '@/lib/demo';
+import { initDiag } from '@/lib/diag';
 import './index.css';
+
+// Diagnóstico: erros globais + eventos de cada etapa em window.__stilloDiag.
+initDiag();
 
 // Modo demo: faz login automático para testar a UI sem backend.
 if (isDemo()) seedDemoAuth();
