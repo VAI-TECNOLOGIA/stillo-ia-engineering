@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Sparkles, CloudUpload, Loader2, FileText, Send, CheckCircle2, ArrowRight,
   X, Plus, AlertTriangle, ShieldCheck, FileSearch, Layers,
-  Ruler, Waves, Flame, Lightbulb, Filter, MapPin, Award, UserCheck, Calculator,
+  Ruler, Waves, Flame, Lightbulb, Filter, Award, UserCheck, Calculator,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,7 +39,9 @@ interface Msg {
 }
 
 interface Pergunta {
-  campo: string; // 'cidade' | 'aquecimento' | 'atrativos' | 'padrao' | 'profundidade' | 'resolver:<alvo>:<campo>'
+  campo: string; // 'aquecimento' | 'atrativos' | 'padrao' | 'profundidade' | 'resolver:<alvo>:<campo>'
+  /** Mensagens CURTAS que precedem a pergunta (efeito de conversa, uma bolha por vez). */
+  intro?: string[];
   texto: string;
   opcoes?: string[];
   /** Pergunta real que vira evidência CONFIRMACAO_HUMANA via PATCH /resolver. */
@@ -99,51 +101,45 @@ function classificarPorNome(nome: string): TipoDoc {
 const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * DEMO — monta APENAS as perguntas das pendências (o que o PDF não deixou claro).
- * Sem relatório-dump: o motor pergunta direto, item por item.
+ * DEMO — só o que importa pro ORÇAMENTO (nada de cadastro/cidade). Mensagens
+ * curtas, em tom de conversa: a primeira pergunta carrega a intro da leitura.
  */
 function buildPerguntasDemo(docs: DocAnalise[]): Pergunta[] {
   const tipos = new Set(docs.map((d) => d.tipo));
   const temCortes = tipos.has('CORTES') || tipos.has('DETALHES_EXECUTIVOS');
-  const temHidraulico = tipos.has('HIDRAULICO') || tipos.has('CASA_DE_MAQUINAS') || tipos.has('EQUIPAMENTOS');
-  const docArq = docs.find((d) => ['ARQUITETONICO', 'LAZER', 'IMPLANTACAO'].includes(d.tipo as string)) ?? docs[0];
 
   const perguntas: Pergunta[] = [];
-
-  perguntas.push({
-    campo: 'cidade',
-    texto:
-      `Li e classifiquei ${docs.length === 1 ? 'o documento' : `os ${docs.length} documentos`}. ` +
-      `A área da piscina está evidenciada na planta (${docArq?.nome ?? 'arquitetônico'}). ` +
-      `Algumas informações não estavam claras — vou confirmar com você, rapidinho.\n\n` +
-      `Primeiro: qual a cidade e o estado da obra?`,
-  });
+  const intro = [
+    `Pronto, li ${docs.length === 1 ? 'o documento' : `os ${docs.length} documentos`}! ✅`,
+    `A área da piscina está na planta — registrei com fonte e página.`,
+    `Só preciso confirmar o que não ficou claro pra fechar o orçamento. 👇`,
+  ];
 
   if (!temCortes) {
     perguntas.push({
       campo: 'profundidade',
-      texto: `A PROFUNDIDADE não estava na planta (faltou a prancha de cortes). O motor não inventa — qual é?`,
+      intro,
+      texto: `A profundidade não está na planta (faltou a prancha de cortes). Qual é?`,
       opcoes: ['1,20 m (recreação)', '1,40 m (padrão residencial)', '1,50 m', '1,20 a 1,60 m (fundo inclinado)'],
     });
   }
 
   perguntas.push({
     campo: 'aquecimento',
-    texto: `AQUECIMENTO não foi evidenciado em nenhum documento. Como deseja?`,
+    ...(perguntas.length === 0 ? { intro } : {}),
+    texto: `Aquecimento — como prefere?`,
     opcoes: ['Trocador de calor a gás', 'Bomba de calor elétrica', 'Sem aquecimento'],
   });
 
   perguntas.push({
     campo: 'atrativos',
-    texto: `ATRATIVOS (cascata, hidromassagem, prainha) não foram evidenciados. Deseja incluir algum?`,
+    texto: `Atrativos? (cascata, hidro, prainha…)`,
     opcoes: ['Cascata (lâmina d\'água)', 'Cascata + hidromassagem', 'Prainha de entrada', 'Nenhum atrativo'],
   });
 
   perguntas.push({
     campo: 'padrao',
-    texto: temHidraulico
-      ? `Por fim — o padrão dos equipamentos (o hidráulico especifica, você pode ajustar):`
-      : `Por fim — o padrão dos equipamentos (serão dimensionados por norma NBR 10339):`,
+    texto: `Última: padrão dos equipamentos?`,
     opcoes: ['Econômico', 'Padrão ⭐', 'Premium'],
   });
 
@@ -151,26 +147,19 @@ function buildPerguntasDemo(docs: DocAnalise[]): Pergunta[] {
 }
 
 /**
- * REAL — perguntas derivadas do que o BACKEND devolveu:
+ * REAL — perguntas derivadas do que o BACKEND devolveu (NADA de cadastro):
  *  - divergência entre IAs (consenso) → pergunta o valor correto;
- *  - profundidade sem corte (validação) → pergunta a profundidade;
- *  - cidade/aquecimento/atrativos/padrão → personalização do orçamento.
+ *  - área não evidenciada / profundidade sem corte (validação) → pergunta;
+ *  - aquecimento/atrativos/padrão → personalização do orçamento.
+ * Mensagens curtas (intro em bolhas separadas) — tom de conversa.
  */
 function buildPerguntasReais(analise: ProjectAnalysisV2): Pergunta[] {
   const perguntas: Pergunta[] = [];
   const docs = analise.analises ?? [];
-  const nomeArq = docs[0]?.arquivo?.nomeOriginal ?? 'documento';
 
-  perguntas.push({
-    campo: 'cidade',
-    texto:
-      `Análise concluída — ${docs.length === 1 ? `o documento (${nomeArq}) foi lido` : `os ${docs.length} documentos foram lidos`} ` +
-      `pelas IAs de forma independente. O que ficou claro está registrado com evidência; ` +
-      `o que não ficou, vou confirmar com você agora.\n\n` +
-      `Primeiro: qual a cidade e o estado da obra?`,
-  });
-
-  // Divergências do consenso → o humano decide (vira evidência CONFIRMACAO_HUMANA)
+  // Divergências do consenso → o humano decide (vira evidência CONFIRMACAO_HUMANA).
+  // Os valores que cada IA leu viram OPÇÕES clicáveis.
+  const NOME_IA: Record<string, string> = { openai: 'GPT-4o', anthropic: 'Claude', gemini: 'Gemini' };
   const vistos = new Set<string>();
   for (const doc of docs) {
     const cons = doc.extracao?.__consenso;
@@ -181,13 +170,17 @@ function buildPerguntasReais(analise: ProjectAnalysisV2): Pergunta[] {
       const [alvoBruto, campoBruto] = c.campo.split('.');
       const alvo = alvoBruto.replace(/_/g, ' ');
       const campo = (campoBruto ?? 'areaM2') as CampoResolvivel;
-      const notif = cons.notificacoes?.find((n) => n.toLowerCase().includes(alvo.toLowerCase()));
+      const unidade = campo === 'areaM2' ? 'm²' : 'm';
+      const votos = (c.votos ?? []).filter((v) => v.valor != null);
       perguntas.push({
         campo: `resolver:${alvo}:${campo}`,
         resolve: { alvo, campo },
-        texto:
-          (notif ?? `As IAs divergiram sobre "${alvo}" (${campo}).`) +
-          `\n\nQual é o valor correto${campo === 'areaM2' ? ' (em m²)' : ' (em metros)'}? Confira na planta e digite o número.`,
+        intro: [
+          `⚠️ As IAs divergiram na ${campo === 'areaM2' ? 'área' : campo} da ${alvo.toLowerCase()}:`,
+          votos.map((v) => `${NOME_IA[v.provider] ?? v.provider} leu ${String(v.valor).replace('.', ',')} ${unidade}`).join(' · '),
+        ],
+        texto: `Confere na planta — qual é o correto?`,
+        ...(votos.length ? { opcoes: votos.map((v) => `${String(v.valor).replace('.', ',')} ${unidade} (${NOME_IA[v.provider] ?? v.provider})`) } : {}),
       });
     }
   }
@@ -214,7 +207,8 @@ function buildPerguntasReais(analise: ProjectAnalysisV2): Pergunta[] {
       perguntas.push({
         campo: `resolver:${p.alvo}:profundidadeMaxM`,
         resolve: { alvo: p.alvo, campo: 'profundidadeMaxM' },
-        texto: `A PROFUNDIDADE de "${p.alvo}" não está evidenciada (faltou a prancha de cortes). O motor não inventa — qual é?`,
+        intro: [`A profundidade da ${p.alvo.toLowerCase()} não está na planta (faltou a prancha de cortes).`],
+        texto: `Qual é?`,
         opcoes: ['1,20 m (recreação)', '1,40 m (padrão residencial)', '1,50 m', '1,20 a 1,60 m (fundo inclinado)'],
       });
     } else if (p.codigo === 'PISCINA_SEM_AREA') {
@@ -222,12 +216,11 @@ function buildPerguntasReais(analise: ProjectAnalysisV2): Pergunta[] {
       perguntas.push({
         campo: `resolver:${p.alvo}:areaM2`,
         resolve: { alvo: p.alvo, campo: 'areaM2' },
-        texto:
-          `A ÁREA de "${p.alvo}" não ficou evidenciada com segurança.` +
-          (sugestao != null
-            ? ` Uma das IAs leu ${String(sugestao).replace('.', ',')} m², mas sem confirmação das demais — confira na planta.`
-            : ' Confira na planta.') +
-          `\n\nQual é a área correta, em m²?`,
+        intro: [
+          `A área da ${p.alvo.toLowerCase()} não ficou clara na leitura.` +
+          (sugestao != null ? ` Uma IA leu ${String(sugestao).replace('.', ',')} m², sem confirmação das outras.` : ''),
+        ],
+        texto: `Confere na planta — qual é a área, em m²?`,
         ...(sugestao != null ? { opcoes: [`${String(sugestao).replace('.', ',')} m² (leitura da IA)`] } : {}),
       });
     }
@@ -239,25 +232,34 @@ function buildPerguntasReais(analise: ProjectAnalysisV2): Pergunta[] {
     perguntas.push({
       campo: `resolver:${cf.alvo}:${campo}`,
       resolve: { alvo: cf.alvo, campo },
-      texto: `Os documentos CONFLITAM sobre ${campo} de "${cf.alvo}". Qual é o valor correto?`,
+      intro: [`Os documentos conflitam sobre ${campo} da ${cf.alvo.toLowerCase()}.`],
+      texto: `Qual é o valor correto?`,
     });
   }
 
   perguntas.push({
     campo: 'aquecimento',
-    texto: `AQUECIMENTO não foi evidenciado. Como deseja?`,
+    texto: `Aquecimento — como prefere?`,
     opcoes: ['Trocador de calor a gás', 'Bomba de calor elétrica', 'Sem aquecimento'],
   });
   perguntas.push({
     campo: 'atrativos',
-    texto: `ATRATIVOS (cascata, hidromassagem, prainha) — deseja incluir algum?`,
+    texto: `Atrativos? (cascata, hidro, prainha…)`,
     opcoes: ['Cascata (lâmina d\'água)', 'Cascata + hidromassagem', 'Prainha de entrada', 'Nenhum atrativo'],
   });
   perguntas.push({
     campo: 'padrao',
-    texto: `Por fim — o padrão dos equipamentos:`,
+    texto: `Última: padrão dos equipamentos?`,
     opcoes: ['Econômico', 'Padrão ⭐', 'Premium'],
   });
+
+  // Abertura da conversa entra como bolhas curtas antes da 1ª pergunta
+  const introGeral = [
+    `Pronto! As IAs terminaram de ler ${docs.length === 1 ? 'o documento' : `os ${docs.length} documentos`}. ✅`,
+    `O que ficou claro já está registrado com evidência (fonte + página).`,
+    `Preciso confirmar só o que segue. 👇`,
+  ];
+  perguntas[0].intro = [...introGeral, ...(perguntas[0].intro ?? [])];
 
   return perguntas;
 }
@@ -367,6 +369,17 @@ export function NovoOrcamentoPage() {
     setFiles((prev) => prev.filter((f) => f.name !== name));
   }
 
+  /** Exibe uma pergunta como CONVERSA: bolhas curtas, uma por vez, com "digitando…". */
+  async function mostrarPergunta(p: Pergunta) {
+    for (const m of [...(p.intro ?? []), p.texto]) {
+      setChatLoading(true);
+      await pause(620);
+      setChatLoading(false);
+      setMsgs((prev) => [...prev, { papel: 'assistant', texto: m }]);
+      await pause(260);
+    }
+  }
+
   // ─── Pipeline DEMO (simulação local — usada na demo de vendas) ───────────────
 
   async function iniciarAnaliseDemo() {
@@ -394,8 +407,9 @@ export function NovoOrcamentoPage() {
     setPerguntas(qs);
     setRespostas({});
     setPerguntaIdx(0);
-    setMsgs([{ papel: 'assistant', texto: qs[0].texto }]);
+    setMsgs([]);
     setStep('perguntas');
+    await mostrarPergunta(qs[0]);
   }
 
   // ─── Pipeline REAL (upload → consenso 3-IA → perguntas reais) ────────────────
@@ -450,8 +464,9 @@ export function NovoOrcamentoPage() {
       setPerguntas(qs);
       setRespostas({});
       setPerguntaIdx(0);
-      setMsgs([{ papel: 'assistant', texto: qs[0].texto }]);
+      setMsgs([]);
       setStep('perguntas');
+      await mostrarPergunta(qs[0]);
     } catch (e) {
       const msg = diagErro('análise real', e);
       setErro(`A análise falhou: ${msg}`);
@@ -483,15 +498,11 @@ export function NovoOrcamentoPage() {
         }
       }
 
-      // cidade/uf + preferências do orçamento → obra
-      const cidadeUf = todas['cidade'] ?? '';
-      const ufMatch = cidadeUf.match(/\b([A-Za-z]{2})\s*$/);
+      // preferências do orçamento → obra (sem dados cadastrais — só o que gera orçamento)
       await analiseApi.atualizarObra(obraId, {
-        cidade: cidadeUf.replace(/[-–—,]?\s*[A-Za-z]{2}\s*$/, '').trim() || cidadeUf,
-        ...(ufMatch ? { uf: ufMatch[1].toUpperCase() } : {}),
         observacoes: `Preferências do orçamento (Novo Orçamento com IA): aquecimento=${todas['aquecimento'] ?? '-'} · atrativos=${todas['atrativos'] ?? '-'} · padrão=${todas['padrao'] ?? '-'}`,
       });
-      diagLog('obra atualizada', { cidade: cidadeUf });
+      diagLog('obra atualizada (preferências)');
 
       // estado final pós-resoluções
       const atualizada = await analiseApi.obter(obraId);
@@ -515,18 +526,20 @@ export function NovoOrcamentoPage() {
     const todas = campo ? { ...respostas, [campo]: texto } : respostas;
     if (campo) setRespostas(todas);
 
-    setChatLoading(true);
-    await pause(500);
-    setChatLoading(false);
-
     const next = perguntaIdx + 1;
     if (next < perguntas.length) {
       setPerguntaIdx(next);
-      setMsgs((m) => [...m, { papel: 'assistant', texto: perguntas[next].texto }]);
+      await mostrarPergunta(perguntas[next]);
     } else if (isDemo()) {
+      setChatLoading(true);
+      await pause(500);
+      setChatLoading(false);
       setStep('confirmar');
     } else {
-      setMsgs((m) => [...m, { papel: 'assistant', texto: 'Perfeito — registrando suas respostas como evidência (CONFIRMACAO_HUMANA) e revalidando o projeto…' }]);
+      setChatLoading(true);
+      await pause(450);
+      setChatLoading(false);
+      setMsgs((m) => [...m, { papel: 'assistant', texto: 'Fechado! Registrando suas respostas como evidência e revalidando…' }]);
       await aplicarRespostasReais(todas);
     }
   }
@@ -818,7 +831,7 @@ export function NovoOrcamentoPage() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && sendMsg()}
-                  placeholder={atual?.resolve ? 'Ex: 48,8' : 'Ex: São Luís — MA'}
+                  placeholder={atual?.resolve ? 'Digite o valor — ex: 48,8' : 'Digite sua resposta…'}
                   autoFocus
                 />
                 <Button size="icon" onClick={() => sendMsg()} disabled={!input.trim()} aria-label="Enviar">
@@ -912,17 +925,7 @@ export function NovoOrcamentoPage() {
                 <LinhaMedida Icon={Lightbulb} rotulo="Iluminação"  valor="LED subaquático"                  origem="norma" />
                 <LinhaMedida Icon={Flame}     rotulo="Aquecimento" valor={respostas['aquecimento'] ?? '—'}  origem="voce" />
                 <LinhaMedida Icon={Waves}     rotulo="Atrativos"   valor={respostas['atrativos'] ?? '—'}    origem="voce" />
-              </div>
-            </div>
-
-            {/* Obra */}
-            <div>
-              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <MapPin className="h-3.5 w-3.5" /> Obra
-              </p>
-              <div className="divide-y rounded-xl border px-3">
-                <LinhaMedida Icon={MapPin} rotulo="Local"  valor={respostas['cidade'] ?? '—'} origem="voce" />
-                <LinhaMedida Icon={Award}  rotulo="Padrão" valor={respostas['padrao'] ?? '—'} origem="voce" />
+                <LinhaMedida Icon={Award}     rotulo="Padrão dos equipamentos" valor={respostas['padrao'] ?? '—'} origem="voce" />
               </div>
             </div>
 
