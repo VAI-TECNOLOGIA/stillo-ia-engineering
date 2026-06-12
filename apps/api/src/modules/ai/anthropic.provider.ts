@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
-  parseDataUrl,
+  fetchComRetry, parseDataUrl,
   type AiCredentials, type AiProvider, type ChatContentPart, type ChatMessage,
   type CompletionOptions, type CompletionResult, type ProviderNome,
 } from './ai.types';
@@ -27,7 +27,7 @@ export class AnthropicProvider implements AiProvider {
       content: this.toBlocks(m.content),
     }));
 
-    const res = await fetch(`${creds.baseUrl ?? this.baseUrl}/messages`, {
+    const res = await fetchComRetry(`${creds.baseUrl ?? this.baseUrl}/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
-  parseDataUrl,
+  fetchComRetry, parseDataUrl,
   type AiCredentials, type AiProvider, type ChatContentPart, type ChatMessage,
   type CompletionOptions, type CompletionResult, type ProviderNome,
 } from './ai.types';
@@ -24,7 +24,7 @@ export class GeminiProvider implements AiProvider {
     }));
 
     const url = `${creds.baseUrl ?? this.baseUrl}/models/${model}:generateContent?key=${encodeURIComponent(creds.apiKey)}`;
-    const res = await fetch(url, {
+    const res = await fetchComRetry(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

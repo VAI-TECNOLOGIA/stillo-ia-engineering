@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { AiCredentials, AiProvider, ChatMessage, CompletionOptions, CompletionResult, ProviderNome } from './ai.types';
+import { fetchComRetry, type AiCredentials, type AiProvider, type ChatMessage, type CompletionOptions, type CompletionResult, type ProviderNome } from './ai.types';
 
 /**
  * Adapter OpenAI via REST (sem SDK — mantém o bundle leve e o domínio desacoplado).
@@ -12,7 +12,7 @@ export class OpenAiProvider implements AiProvider {
 
   async complete(creds: AiCredentials, messages: ChatMessage[], options: CompletionOptions = {}): Promise<CompletionResult> {
     const model = options.model ?? creds.model ?? 'gpt-4o';
-    const res = await fetch(`${creds.baseUrl ?? this.defaultBaseUrl}/chat/completions`, {
+    const res = await fetchComRetry(`${creds.baseUrl ?? this.defaultBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${creds.apiKey}` },
       body: JSON.stringify({
@@ -41,7 +41,7 @@ export class OpenAiProvider implements AiProvider {
 
   async embed(creds: AiCredentials, texts: string[]): Promise<number[][]> {
     const model = creds.embeddingModel ?? 'text-embedding-3-large';
-    const res = await fetch(`${creds.baseUrl ?? this.defaultBaseUrl}/embeddings`, {
+    const res = await fetchComRetry(`${creds.baseUrl ?? this.defaultBaseUrl}/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${creds.apiKey}` },
       // dimensions: 1536 casa com as colunas vector(1536) do schema (pgvector/HNSW).

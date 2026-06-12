@@ -53,3 +53,21 @@ export function parseDataUrl(url: string): { mediaType: string; base64: string }
   const m = /^data:([^;]+);base64,(.+)$/s.exec(url);
   return m ? { mediaType: m[1], base64: m[2] } : null;
 }
+
+/** Statuses transitórios das APIs de IA: sobrecarga/limite — re-tentar resolve. */
+const STATUS_TRANSITORIO = new Set([429, 500, 502, 503, 529]);
+
+/**
+ * fetch com retry p/ APIs de IA: re-tenta (backoff 1,5s/3s) quando o status é
+ * transitório (ex.: Gemini 503 "high demand", Anthropic 529 "overloaded").
+ * Erros definitivos (400/401/404…) retornam direto p/ o chamador tratar.
+ */
+export async function fetchComRetry(url: string, init: RequestInit, tentativas = 3): Promise<Response> {
+  let res: Response | null = null;
+  for (let i = 0; i < tentativas; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 1500 * i));
+    res = await fetch(url, init);
+    if (res.ok || !STATUS_TRANSITORIO.has(res.status)) return res;
+  }
+  return res as Response;
+}

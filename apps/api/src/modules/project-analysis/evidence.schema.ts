@@ -72,8 +72,19 @@ export function campoVazio<T>(): CampoConsolidado<T> {
   return { valor: null, fontes: [], status: 'NAO_IDENTIFICADO' };
 }
 
-/** Parse robusto da resposta IA: aceita JSON puro ou cercado por ```json. */
+/**
+ * Parse robusto da resposta IA: aceita JSON puro, cercado por ```json, ou com
+ * prosa em volta (Claude às vezes abre com "Analisando…" antes do objeto —
+ * fallback extrai do primeiro `{` ao último `}`).
+ */
 export function limparJson(raw: string): unknown {
   const limpo = raw.trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
-  return JSON.parse(limpo);
+  try {
+    return JSON.parse(limpo);
+  } catch {
+    const ini = limpo.indexOf('{');
+    const fim = limpo.lastIndexOf('}');
+    if (ini >= 0 && fim > ini) return JSON.parse(limpo.slice(ini, fim + 1));
+    throw new SyntaxError(`Resposta da IA não contém JSON: ${limpo.slice(0, 120)}`);
+  }
 }

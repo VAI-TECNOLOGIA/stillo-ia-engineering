@@ -16,20 +16,40 @@ export class PdfRasterService {
   static readonly MAX_PAGINAS = 8;
 
   /**
+   * Teto de bytes do PNG por página. Pranchas A0/A1 a escala 2.0 passam de 16MB
+   * e ESTOURAM o limite de imagem dos providers (Anthropic = 10MB; e os modelos
+   * reduzem internamente imagens grandes — acima disso é só latência sem ganho).
+   * Acima do teto, a página é re-renderizada com escala proporcionalmente menor.
+   */
+  static readonly MAX_BYTES_PAGINA = 5 * 1024 * 1024;
+
+  /**
    * Converte as primeiras N páginas do PDF em PNG data URLs.
    * Retorna [] se a rasterização não estiver disponível no ambiente.
    */
   async paginasComoImagens(buffer: Buffer, maxPaginas = PdfRasterService.MAX_PAGINAS): Promise<string[]> {
     try {
       const { pdfToPng } = await import('pdf-to-png-converter');
-      const paginas = await pdfToPng(buffer, {
-        viewportScale: 2.0,                                  // ~144dpi — cotas legíveis sem explodir tokens
-        pagesToProcess: Array.from({ length: maxPaginas }, (_, i) => i + 1), // acima do total: ignoradas
-        disableFontFace: true,
-      });
-      return paginas
-        .filter((p) => p.content)
-        .map((p) => `data:image/png;base64,${(p.content as Buffer).toString('base64')}`);
+      const render = (paginas: number[], escala: number) =>
+        pdfToPng(buffer, { viewportScale: escala, pagesToProcess: paginas, disableFontFace: true });
+
+      const paginas = await render(Array.from({ length: maxPaginas }, (_, i) => i + 1), 2.0);
+      const LIMITE = PdfRasterService.MAX_BYTES_PAGINA;
+      const out: string[] = [];
+
+      for (const [idx, p] of paginas.entries()) {
+        let png = p.content as Buffer | undefined;
+        if (!png) continue;
+        if (png.length > LIMITE) {
+          // bytes de PNG ~ área ∝ escala² → nova escala = 2.0·√(teto/bytes), com folga de 10%
+          const escala = Math.max(1.0, 2.0 * Math.sqrt((LIMITE * 0.9) / png.length));
+          this.logger.log(`Página ${idx + 1}: PNG ${(png.length / 1e6).toFixed(1)}MB > teto — re-render a escala ${escala.toFixed(2)}`);
+          const [menor] = await render([idx + 1], escala);
+          if (menor?.content) png = menor.content as Buffer;
+        }
+        out.push(`data:image/png;base64,${png.toString('base64')}`);
+      }
+      return out;
     } catch (e) {
       this.logger.warn(`Rasterização indisponível/falhou: ${String(e)}`);
       return [];
