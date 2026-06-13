@@ -6,7 +6,6 @@ import { useAuthStore } from '@/stores/auth.store';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { AiChatPanel } from './AiChatPanel';
-import { DemoBanner } from './DemoBanner';
 
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
@@ -23,7 +22,6 @@ export function AppShell() {
 
   return (
     <div className="flex h-full flex-col">
-      <DemoBanner />
     <div className="flex flex-1 overflow-hidden">
       {/* Sidebar */}
       <aside className={cn('flex flex-col border-r bg-card transition-all', collapsed ? 'w-16' : 'w-64')}>
