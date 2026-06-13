@@ -342,6 +342,9 @@ export function NovoOrcamentoPage() {
   const [chatLoading, setChatLoading] = useState(false);
   const [gerando, setGerando] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // Lock SÍNCRONO contra reentrância: impede 2 sendMsg concorrentes (clique duplo
+  // ou opção que renderizou cedo) — que pulariam uma pergunta e travariam o confirmar.
+  const enviandoRef = useRef(false);
 
   // modo REAL
   const [obraId, setObraId] = useState<string | null>(null);
@@ -366,15 +369,20 @@ export function NovoOrcamentoPage() {
     setFiles((prev) => prev.filter((f) => f.name !== name));
   }
 
-  /** Exibe uma pergunta como CONVERSA: bolhas curtas, uma por vez, com "digitando…". */
+  /**
+   * Exibe uma pergunta como CONVERSA: bolhas curtas, uma por vez, com "digitando…".
+   * chatLoading fica LIGADO o tempo todo da digitação → as opções/input só aparecem
+   * quando a pergunta termina (sem piscar antes), e o guard de sendMsg bloqueia
+   * cliques durante a animação.
+   */
   async function mostrarPergunta(p: Pergunta) {
+    setChatLoading(true);
     for (const m of [...(p.intro ?? []), p.texto]) {
-      setChatLoading(true);
       await pause(620);
-      setChatLoading(false);
       setMsgs((prev) => [...prev, { papel: 'assistant', texto: m }]);
       await pause(260);
     }
+    setChatLoading(false);
   }
 
   // ─── Pipeline DEMO (simulação local — usada na demo de vendas) ───────────────
@@ -516,28 +524,32 @@ export function NovoOrcamentoPage() {
 
   async function sendMsg(resposta?: string) {
     const texto = (resposta ?? input).trim();
-    if (!texto || chatLoading) return;
-    setInput('');
-    setMsgs((m) => [...m, { papel: 'user', texto }]);
-    const campo = perguntas[perguntaIdx]?.campo;
-    const todas = campo ? { ...respostas, [campo]: texto } : respostas;
-    if (campo) setRespostas(todas);
+    // Lock síncrono: enquanto uma pergunta digita ou as respostas são aplicadas,
+    // qualquer novo envio é ignorado (evita pular pergunta → confirmar falhar).
+    if (!texto || enviandoRef.current || chatLoading) return;
+    enviandoRef.current = true;
+    try {
+      setInput('');
+      setMsgs((m) => [...m, { papel: 'user', texto }]);
+      const campo = perguntas[perguntaIdx]?.campo;
+      const todas = campo ? { ...respostas, [campo]: texto } : respostas;
+      if (campo) setRespostas(todas);
 
-    const next = perguntaIdx + 1;
-    if (next < perguntas.length) {
-      setPerguntaIdx(next);
-      await mostrarPergunta(perguntas[next]);
-    } else if (isDemo()) {
-      setChatLoading(true);
-      await pause(500);
-      setChatLoading(false);
-      setStep('confirmar');
-    } else {
-      setChatLoading(true);
-      await pause(450);
-      setChatLoading(false);
-      setMsgs((m) => [...m, { papel: 'assistant', texto: 'Registrando…' }]);
-      await aplicarRespostasReais(todas);
+      const next = perguntaIdx + 1;
+      if (next < perguntas.length) {
+        setPerguntaIdx(next);
+        await mostrarPergunta(perguntas[next]);
+      } else if (isDemo()) {
+        setChatLoading(true);
+        await pause(500);
+        setChatLoading(false);
+        setStep('confirmar');
+      } else {
+        setMsgs((m) => [...m, { papel: 'assistant', texto: 'Registrando…' }]);
+        await aplicarRespostasReais(todas);
+      }
+    } finally {
+      enviandoRef.current = false;
     }
   }
 
@@ -589,6 +601,11 @@ export function NovoOrcamentoPage() {
   const avisosLeituraUnica = (analise?.analises ?? [])
     .flatMap((a) => a.extracao?.__consenso?.campos ?? [])
     .filter((c) => c.status === 'LIDO_POR_UMA');
+
+  // Pendências que AINDA bloqueiam o orçamento após as respostas. Se sobrar algo
+  // aqui, o "confirmar" vai falhar — então mostramos antes, com orientação, em vez
+  // de deixar o cliente clicar e tomar erro (foi o que travou o teste do cliente).
+  const pendentesRestantes = (analise?.validacao?.pendencias ?? []).concat(analise?.validacao?.erros ?? []);
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -934,12 +951,26 @@ export function NovoOrcamentoPage() {
               <span className="flex items-center gap-1"><Calculator className="h-3 w-3 text-amber-600" /> calculado</span>
             </div>
 
+            {/* Pendências que ainda bloqueiam (modo real) — mostradas ANTES de clicar */}
+            {!isDemo() && !confirmado && pendentesRestantes.length > 0 && (
+              <div className="space-y-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <p className="font-semibold">Ainda falta resolver pra liberar o orçamento:</p>
+                {pendentesRestantes.map((p, i) => (
+                  <p key={i} className="pl-1">· {p.mensagem}</p>
+                ))}
+                <p className="pt-1 text-[11px]">
+                  Itens de medida: use "← revisar respostas". Itens que pedem outra prancha
+                  (cortes, hidráulica): anexe o arquivo e gere uma nova análise.
+                </p>
+              </div>
+            )}
+
             {confirmado ? (
               <Button className="w-full" size="lg" onClick={() => navigate(`/obras/${obraId}/dimensionamento`)}>
                 <CheckCircle2 className="h-4 w-4" /> Ir para o Dimensionamento <ArrowRight className="ml-1 h-4 w-4" />
               </Button>
             ) : (
-              <Button className="w-full" size="lg" onClick={gerarOrcamento} disabled={gerando}>
+              <Button className="w-full" size="lg" onClick={gerarOrcamento} disabled={gerando || (!isDemo() && pendentesRestantes.length > 0)}>
                 {gerando ? (
                   <><Loader2 className="h-4 w-4 animate-spin" /> {isDemo() ? 'Gerando orçamento técnico…' : 'Confirmando medidas…'}</>
                 ) : (
@@ -949,7 +980,7 @@ export function NovoOrcamentoPage() {
             )}
             {!confirmado && (
               <button
-                onClick={() => { setStep('perguntas'); setPerguntaIdx(0); setMsgs([{ papel: 'assistant', texto: perguntas[0].texto }]); }}
+                onClick={async () => { setStep('perguntas'); setRespostas({}); setPerguntaIdx(0); setMsgs([]); await mostrarPergunta(perguntas[0]); }}
                 className="w-full text-center text-xs text-muted-foreground hover:text-foreground"
               >
                 ← revisar respostas
